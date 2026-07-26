@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose a coordination or integration improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: failure
+    attributes:
+      label: Agent failure mode
+      description: What concrete multi-agent failure would this prevent?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed protocol behavior
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariants and security impact

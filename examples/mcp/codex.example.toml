@@ -1,0 +1,13 @@
+[mcp_servers.relaymesh]
+command = "npm"
+args = ["run", "mcp"]
+cwd = "/absolute/path/to/relaymesh"
+
+[mcp_servers.relaymesh.env]
+RELAYMESH_URL = "http://127.0.0.1:4317"
+RELAYMESH_MISSION_ID = "replace-with-mission-id"
+RELAYMESH_AGENT_ID = "replace-with-agent-id"
+RELAYMESH_AGENT_KEY = "replace-with-agent-key"
+RELAYMESH_MODEL = "gpt"
+RELAYMESH_ROLE = "builder"
+RELAYMESH_CAPABILITIES = "code.typescript,test.unit"

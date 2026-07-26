@@ -1,0 +1,67 @@
+{
+  "name": "relaymesh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Durable coordination runtime for heterogeneous AI agent sessions.",
+  "type": "module",
+  "bin": {
+    "relaymesh": "./dist/server/src/cli/index.js",
+    "relaymesh-mcp": "./dist/server/src/mcp/index.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:web": "vite",
+    "build": "npm run clean && npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:web": "vite build",
+    "clean": "node scripts/clean.mjs",
+    "start": "node dist/server/src/server/index.js",
+    "cli": "tsx src/cli/index.ts",
+    "mcp": "tsx src/mcp/index.ts",
+    "demo:seed": "tsx src/scripts/seed-demo.ts",
+    "demo": "npm run demo:seed && npm run dev",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint .",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.3.0",
+    "@fastify/helmet": "^13.1.0",
+    "@fastify/rate-limit": "^11.1.0",
+    "@fastify/static": "^10.1.2",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "fastify": "^5.10.0",
+    "jose": "^6.2.4",
+    "lucide-react": "^1.27.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "@vitest/coverage-v8": "^4.1.10",
+    "concurrently": "^9.2.1",
+    "eslint": "^10.0.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.65.0",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.11"
+  }
+}

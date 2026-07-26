@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "relaymesh": {
+      "command": "npm",
+      "args": ["run", "mcp"],
+      "cwd": "/absolute/path/to/relaymesh",
+      "env": {
+        "RELAYMESH_URL": "http://127.0.0.1:4317",
+        "RELAYMESH_MISSION_ID": "replace-with-mission-id",
+        "RELAYMESH_AGENT_ID": "replace-with-agent-id",
+        "RELAYMESH_AGENT_KEY": "replace-with-agent-key",
+        "RELAYMESH_MODEL": "claude",
+        "RELAYMESH_ROLE": "architect",
+        "RELAYMESH_CAPABILITIES": "architecture.systems,research.web"
+      }
+    }
+  }
+}

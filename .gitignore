@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+data/
+.env
+.env.local
+.DS_Store
+*.log
+.firecrawl/
+playwright-report/
+test-results/
