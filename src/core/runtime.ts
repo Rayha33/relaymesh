@@ -469,8 +469,28 @@ export class RelayRuntime {
     status: Mission["status"],
   ): Mission {
     const mission = this.getMission(missionId);
+    if (status === mission.status) {
+      return mission;
+    }
+    const allowed: Record<Mission["status"], Mission["status"][]> = {
+      draft: ["active", "cancelled"],
+      active: ["paused", "failed", "cancelled"],
+      paused: ["active", "failed", "cancelled"],
+      completed: [],
+      failed: [],
+      cancelled: [],
+    };
+    if (!allowed[mission.status].includes(status)) {
+      throw conflict(
+        `Mission cannot transition from ${mission.status} to ${status}`,
+      );
+    }
+
     const at = this.timestamp();
     this.database.transaction(() => {
+      if (status === "failed" || status === "cancelled") {
+        this.cancelOpenTasks(missionId, at, `mission.${status}`);
+      }
       this.database.raw
         .prepare("UPDATE missions SET status = ?, updated_at = ? WHERE id = ?")
         .run(status, at, missionId);
@@ -482,8 +502,11 @@ export class RelayRuntime {
         payload: { from: mission.status, to: status },
         createdAt: at,
       });
+      if (status === "active") {
+        this.maybeCompleteMission(missionId, at);
+      }
     });
-    return { ...mission, status, updatedAt: at };
+    return this.getMission(missionId);
   }
 
   createTask(missionId: string, input: CreateTaskInput): Task {
@@ -1131,6 +1154,9 @@ export class RelayRuntime {
         },
         createdAt: at,
       });
+      if (!requeue) {
+        this.failMissionFromTask(task.missionId, taskId, at);
+      }
     });
 
     const result = { ...task, status: nextStatus, updatedAt: at };
@@ -1528,6 +1554,12 @@ export class RelayRuntime {
         )
         .all(at) as unknown as LeaseRow[];
       for (const lease of expiredLeases) {
+        const current = this.database.raw
+          .prepare("SELECT status FROM leases WHERE id = ?")
+          .get(lease.id) as { status: Lease["status"] } | undefined;
+        if (current?.status !== "active") {
+          continue;
+        }
         const outcome = this.releaseLeaseForRecovery(
           lease,
           at,
@@ -1811,10 +1843,16 @@ export class RelayRuntime {
       },
       createdAt: at,
     });
+    if (nextStatus === "failed") {
+      this.failMissionFromTask(task.missionId, task.id, at);
+    }
     return nextStatus;
   }
 
   private maybeCompleteMission(missionId: string, at: string): void {
+    if (this.getMission(missionId).status !== "active") {
+      return;
+    }
     const counts = this.database.raw
       .prepare(
         `SELECT
@@ -1835,6 +1873,73 @@ export class RelayRuntime {
         actorId: "scheduler",
         type: "mission.completed",
         payload: { taskCount: counts.total },
+        createdAt: at,
+      });
+    }
+  }
+
+  private failMissionFromTask(
+    missionId: string,
+    failedTaskId: string,
+    at: string,
+  ): void {
+    const mission = this.getMission(missionId);
+    if (["completed", "failed", "cancelled"].includes(mission.status)) {
+      return;
+    }
+    this.cancelOpenTasks(missionId, at, "dependency_failed");
+    this.database.raw
+      .prepare(
+        "UPDATE missions SET status = 'failed', updated_at = ? WHERE id = ?",
+      )
+      .run(at, missionId);
+    this.events.append({
+      missionId,
+      actorType: "system",
+      actorId: "scheduler",
+      type: "mission.failed",
+      payload: {
+        failedTaskId,
+        priorStatus: mission.status,
+      },
+      createdAt: at,
+    });
+  }
+
+  private cancelOpenTasks(
+    missionId: string,
+    at: string,
+    reason: string,
+  ): void {
+    const tasks = this.database.raw
+      .prepare(
+        `SELECT * FROM tasks
+         WHERE mission_id = ? AND status IN ('queued', 'leased', 'running')`,
+      )
+      .all(missionId) as unknown as TaskRow[];
+    for (const row of tasks) {
+      this.database.raw
+        .prepare(
+          `UPDATE leases SET status = 'released', heartbeat_at = ?
+           WHERE task_id = ? AND status = 'active'`,
+        )
+        .run(at, row.id);
+      this.database.raw
+        .prepare(
+          `UPDATE tasks SET status = 'cancelled', updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(at, row.id);
+      this.events.append({
+        missionId,
+        actorType: "system",
+        actorId: "scheduler",
+        type: "task.cancelled",
+        payload: {
+          taskId: row.id,
+          priorStatus: row.status,
+          reason,
+        },
         createdAt: at,
       });
     }

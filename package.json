@@ -1,15 +1,60 @@
 {
   "name": "relaymesh",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "description": "Durable coordination runtime for heterogeneous AI agent sessions.",
-  "type": "module",
-  "bin": {
-    "relaymesh": "./dist/server/src/cli/index.js",
-    "relaymesh-mcp": "./dist/server/src/mcp/index.js"
+  "license": "MIT",
+  "author": "Rayha33",
+  "homepage": "https://github.com/Rayha33/relaymesh#readme",
+  "bugs": {
+    "url": "https://github.com/Rayha33/relaymesh/issues"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rayha33/relaymesh.git"
+  },
+  "keywords": [
+    "ai-agents",
+    "multi-agent",
+    "mcp",
+    "coordination",
+    "crash-recovery",
+    "llm"
+  ],
+  "type": "module",
+  "main": "./dist/server/src/sdk/index.js",
+  "types": "./dist/server/src/sdk/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server/src/sdk/index.d.ts",
+      "import": "./dist/server/src/sdk/index.js"
+    },
+    "./sdk": {
+      "types": "./dist/server/src/sdk/index.d.ts",
+      "import": "./dist/server/src/sdk/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "relaymesh": "dist/server/src/cli/index.js",
+    "relaymesh-mcp": "dist/server/src/mcp/index.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "examples",
+    ".env.example",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
   "engines": {
     "node": ">=24.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
@@ -28,8 +73,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:package": "npm pack --dry-run",
     "lint": "eslint .",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",

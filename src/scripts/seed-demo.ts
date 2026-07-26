@@ -19,7 +19,7 @@ function seed(): void {
   );
   if (existing !== undefined) {
     process.stdout.write(
-      `Demo already exists: ${existing.id}\nAdmin token: npm run cli -- token\n`,
+      `Demo already exists: ${existing.id}\nAdmin token: relaymesh token (source: npm run cli -- token)\n`,
     );
     return;
   }
@@ -105,8 +105,8 @@ function seed(): void {
       "RelayMesh demo initialized.",
       `Mission: ${mission.id}`,
       `Credentials: ${credentialsPath}`,
-      "Admin token: npm run cli -- token",
-      "Start: npm run dev",
+      "Admin token: relaymesh token (source: npm run cli -- token)",
+      "Start: relaymesh start (source: npm run dev)",
     ].join("\n") + "\n",
   );
 }

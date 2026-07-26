@@ -10,8 +10,8 @@ switches, context loss, process crashes, and uncooperative peers.
    state.
 2. **Agents are replaceable.** A task belongs to a mission, never to one model
    session.
-3. **Every mutation is idempotent.** Clients provide an idempotency key for
-   operations that may be retried.
+3. **Retryable agent mutations are idempotent.** Clients reuse an idempotency
+   key when an operation times out and must be retried.
 4. **Work is leased, not assigned forever.** An expired lease returns to the
    queue with its latest checkpoint.
 5. **Messages are typed and durable.** Delivery is at-least-once; acknowledgments
@@ -19,8 +19,8 @@ switches, context loss, process crashes, and uncooperative peers.
 6. **Artifacts are content-addressed.** Messages reference artifact hashes
    instead of embedding mutable blobs.
 7. **Authority is explicit.** Session tokens are scoped to a mission and role.
-8. **Human intervention remains possible.** Operators can pause missions,
-   requeue tasks, revoke sessions, and inspect the event trail.
+8. **Human intervention remains possible.** Operators can pause or cancel
+   missions, revoke agent identities, run recovery, and inspect the event trail.
 
 ## Components
 
@@ -52,10 +52,12 @@ Claude / Codex / Gemini / custom agents
 
 ## Mission state machine
 
-`draft -> active -> paused -> completed | failed | cancelled`
+`draft -> active <-> paused -> completed | failed | cancelled`
 
-A mission can only complete when all non-cancelled tasks are completed and no
-unacknowledged blocking message remains.
+A mission completes automatically when every task completes. An exhausted task
+fails the mission and cancels remaining work. Cancelling a mission releases all
+active leases before cancelling unfinished tasks, so late completions are
+fenced.
 
 ## Task state machine
 

@@ -51,11 +51,15 @@ export interface RelayClientOptions {
   fetch?: typeof globalThis.fetch;
 }
 
+export interface RelayMutationOptions {
+  idempotencyKey?: string;
+}
+
 type Overview = ReturnType<RelayRuntime["getOverview"]>;
 
 class HttpClient {
   protected readonly baseUrl: string;
-  private readonly fetcher: typeof globalThis.fetch;
+  protected readonly fetcher: typeof globalThis.fetch;
 
   constructor(options: RelayClientOptions) {
     this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:4317").replace(
@@ -69,7 +73,7 @@ class HttpClient {
     path: string,
     init: RequestInit,
     authHeaders: Record<string, string>,
-    idempotent = false,
+    idempotencyKey?: string,
   ): Promise<T> {
     const headers = new Headers(init.headers);
     for (const [key, value] of Object.entries(authHeaders)) {
@@ -78,8 +82,8 @@ class HttpClient {
     if (init.body !== undefined) {
       headers.set("content-type", "application/json");
     }
-    if (idempotent && !headers.has("idempotency-key")) {
-      headers.set("idempotency-key", crypto.randomUUID());
+    if (idempotencyKey !== undefined && !headers.has("idempotency-key")) {
+      headers.set("idempotency-key", idempotencyKey);
     }
     const response = await this.fetcher(`${this.baseUrl}${path}`, {
       ...init,
@@ -216,6 +220,7 @@ export class RelayAgentClient extends HttpClient {
   async join(
     missionId: string,
     input: JoinSessionInput,
+    options: RelayMutationOptions = {},
   ): Promise<{
     joined: JoinedSession;
     session: RelaySessionClient;
@@ -224,12 +229,13 @@ export class RelayAgentClient extends HttpClient {
       `/api/v1/missions/${missionId}/sessions`,
       { method: "POST", body: JSON.stringify(input) },
       { "x-agent-id": this.agentId, "x-agent-key": this.agentKey },
-      true,
+      mutationKey(options),
     );
     return {
       joined,
       session: new RelaySessionClient(joined.sessionToken, joined.session, {
         baseUrl: this.baseUrl,
+        fetch: this.fetcher,
       }),
     };
   }
@@ -248,57 +254,72 @@ export class RelaySessionClient extends HttpClient {
     return { authorization: `Bearer ${this.sessionToken}` };
   }
 
-  heartbeat(): Promise<HeartbeatResult> {
+  heartbeat(options: RelayMutationOptions = {}): Promise<HeartbeatResult> {
     return this.request(
       `/api/v1/sessions/${this.identity.id}/heartbeat`,
       { method: "POST" },
       this.auth,
-      true,
+      mutationKey(options),
     );
   }
 
-  claim(): Promise<ClaimResult | null> {
+  claim(options: RelayMutationOptions = {}): Promise<ClaimResult | null> {
     return this.request(
       `/api/v1/missions/${this.identity.missionId}/tasks/claim`,
       { method: "POST" },
       this.auth,
-      true,
+      mutationKey(options),
     );
   }
 
-  checkpoint(taskId: string, input: CheckpointInput): Promise<Checkpoint> {
+  checkpoint(
+    taskId: string,
+    input: CheckpointInput,
+    options: RelayMutationOptions = {},
+  ): Promise<Checkpoint> {
     return this.request(
       `/api/v1/tasks/${taskId}/checkpoints`,
       { method: "POST", body: JSON.stringify(input) },
       this.auth,
-      true,
+      mutationKey(options),
     );
   }
 
-  complete(taskId: string, input: CompleteTaskInput): Promise<Task> {
+  complete(
+    taskId: string,
+    input: CompleteTaskInput,
+    options: RelayMutationOptions = {},
+  ): Promise<Task> {
     return this.request(
       `/api/v1/tasks/${taskId}/complete`,
       { method: "POST", body: JSON.stringify(input) },
       this.auth,
-      true,
+      mutationKey(options),
     );
   }
 
-  fail(taskId: string, input: FailTaskInput): Promise<Task> {
+  fail(
+    taskId: string,
+    input: FailTaskInput,
+    options: RelayMutationOptions = {},
+  ): Promise<Task> {
     return this.request(
       `/api/v1/tasks/${taskId}/fail`,
       { method: "POST", body: JSON.stringify(input) },
       this.auth,
-      true,
+      mutationKey(options),
     );
   }
 
-  sendMessage(input: SendMessageInput): Promise<RelayMessage> {
+  sendMessage(
+    input: SendMessageInput,
+    options: RelayMutationOptions = {},
+  ): Promise<RelayMessage> {
     return this.request(
       `/api/v1/missions/${this.identity.missionId}/messages`,
       { method: "POST", body: JSON.stringify(input) },
       this.auth,
-      true,
+      mutationKey(options),
     );
   }
 
@@ -310,21 +331,27 @@ export class RelaySessionClient extends HttpClient {
     );
   }
 
-  acknowledge(messageId: string): Promise<RelayMessage> {
+  acknowledge(
+    messageId: string,
+    options: RelayMutationOptions = {},
+  ): Promise<RelayMessage> {
     return this.request(
       `/api/v1/messages/${messageId}/ack`,
       { method: "POST" },
       this.auth,
-      true,
+      mutationKey(options),
     );
   }
 
-  publishArtifact(input: CreateArtifactInput): Promise<Artifact> {
+  publishArtifact(
+    input: CreateArtifactInput,
+    options: RelayMutationOptions = {},
+  ): Promise<Artifact> {
     return this.request(
       `/api/v1/missions/${this.identity.missionId}/artifacts`,
       { method: "POST", body: JSON.stringify(input) },
       this.auth,
-      true,
+      mutationKey(options),
     );
   }
 
@@ -341,9 +368,12 @@ export class RelaySessionClient extends HttpClient {
       `/api/v1/sessions/${this.identity.id}/leave`,
       { method: "POST" },
       this.auth,
-      true,
     );
   }
+}
+
+function mutationKey(options: RelayMutationOptions): string {
+  return options.idempotencyKey ?? crypto.randomUUID();
 }
 
 interface ApiErrorPayload {

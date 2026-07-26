@@ -1,7 +1,6 @@
 [mcp_servers.relaymesh]
-command = "npm"
-args = ["run", "mcp"]
-cwd = "/absolute/path/to/relaymesh"
+command = "relaymesh-mcp"
+args = []
 
 [mcp_servers.relaymesh.env]
 RELAYMESH_URL = "http://127.0.0.1:4317"

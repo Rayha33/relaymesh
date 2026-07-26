@@ -15,95 +15,108 @@ const token =
   process.env.RELAYMESH_ADMIN_TOKEN ??
   readToken(resolve(dataDirectory, "admin-token.txt"));
 
-if (command === "token") {
+if (command === "start") {
+  await import("../server/index.js");
+} else if (command === "demo") {
+  await import("../scripts/seed-demo.js");
+  await import("../server/index.js");
+} else if (command === "demo:seed") {
+  await import("../scripts/seed-demo.js");
+} else {
+  await runAdminCommand();
+}
+
+async function runAdminCommand(): Promise<void> {
+  if (command === "token") {
+    if (token === null) {
+      fail("No local admin token found");
+    }
+    process.stdout.write(`${token}\n`);
+    return;
+  }
+
+  if (command === "help" || command === "--help" || command === "-h") {
+    printHelp();
+    return;
+  }
+
   if (token === null) {
-    fail("No local admin token found");
+    fail(
+      "Admin token not found. Set RELAYMESH_ADMIN_TOKEN or start the server once.",
+    );
   }
-  process.stdout.write(`${token}\n`);
-  process.exit(0);
-}
+  const admin = new RelayAdminClient(token, { baseUrl });
 
-if (command === "help" || command === "--help" || command === "-h") {
-  printHelp();
-  process.exit(0);
-}
-
-if (token === null) {
-  fail(
-    "Admin token not found. Set RELAYMESH_ADMIN_TOKEN or start the server once.",
-  );
-}
-const admin = new RelayAdminClient(token, { baseUrl });
-
-try {
-  switch (command) {
-    case "status": {
-      print(await admin.overview());
-      break;
+  try {
+    switch (command) {
+      case "status": {
+        print(await admin.overview());
+        break;
+      }
+      case "agent:create": {
+        const name = required("--name");
+        const provider = required("--provider");
+        const defaultModel = required("--model");
+        print(
+          await admin.createAgent({
+            name,
+            provider,
+            defaultModel,
+            description: option("--description") ?? "",
+          }),
+        );
+        break;
+      }
+      case "agent:list": {
+        print(await admin.listAgents());
+        break;
+      }
+      case "mission:create": {
+        print(
+          await admin.createMission({
+            title: required("--title"),
+            objective: required("--objective"),
+          }),
+        );
+        break;
+      }
+      case "mission:list": {
+        print(await admin.listMissions());
+        break;
+      }
+      case "mission:show": {
+        print(await admin.getMission(required("--mission")));
+        break;
+      }
+      case "task:create": {
+        print(
+          await admin.createTask(required("--mission"), {
+            title: required("--title"),
+            description: required("--description"),
+            parentTaskId: null,
+            priority: Number.parseInt(option("--priority") ?? "0", 10),
+            requiredCapabilities: csv(option("--capabilities")),
+            dependencies: csv(option("--dependencies")),
+            assignedRole: option("--role"),
+            maxAttempts: Number.parseInt(option("--attempts") ?? "3", 10),
+          }),
+        );
+        break;
+      }
+      case "recover": {
+        print(await admin.recover());
+        break;
+      }
+      case "verify": {
+        print(await admin.verifyEvents(required("--mission")));
+        break;
+      }
+      default:
+        fail(`Unknown command: ${command}`);
     }
-    case "agent:create": {
-      const name = required("--name");
-      const provider = required("--provider");
-      const defaultModel = required("--model");
-      print(
-        await admin.createAgent({
-          name,
-          provider,
-          defaultModel,
-          description: option("--description") ?? "",
-        }),
-      );
-      break;
-    }
-    case "agent:list": {
-      print(await admin.listAgents());
-      break;
-    }
-    case "mission:create": {
-      print(
-        await admin.createMission({
-          title: required("--title"),
-          objective: required("--objective"),
-        }),
-      );
-      break;
-    }
-    case "mission:list": {
-      print(await admin.listMissions());
-      break;
-    }
-    case "mission:show": {
-      print(await admin.getMission(required("--mission")));
-      break;
-    }
-    case "task:create": {
-      print(
-        await admin.createTask(required("--mission"), {
-          title: required("--title"),
-          description: required("--description"),
-          parentTaskId: null,
-          priority: Number.parseInt(option("--priority") ?? "0", 10),
-          requiredCapabilities: csv(option("--capabilities")),
-          dependencies: csv(option("--dependencies")),
-          assignedRole: option("--role"),
-          maxAttempts: Number.parseInt(option("--attempts") ?? "3", 10),
-        }),
-      );
-      break;
-    }
-    case "recover": {
-      print(await admin.recover());
-      break;
-    }
-    case "verify": {
-      print(await admin.verifyEvents(required("--mission")));
-      break;
-    }
-    default:
-      fail(`Unknown command: ${command}`);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   }
-} catch (error) {
-  fail(error instanceof Error ? error.message : String(error));
 }
 
 function option(name: string): string | null {
@@ -153,9 +166,15 @@ function printHelp(): void {
 RelayMesh CLI
 
 Usage:
+  relaymesh <command> [options]
+
+From a source checkout:
   npm run cli -- <command> [options]
 
 Commands:
+  start
+  demo
+  demo:seed
   token
   status
   agent:create  --name NAME --provider PROVIDER --model MODEL

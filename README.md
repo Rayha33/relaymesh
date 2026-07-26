@@ -43,6 +43,20 @@ RelayMesh turns these failure modes into explicit protocol behavior:
 
 Requirements: Node.js 24 or newer.
 
+Fastest installed path:
+
+```bash
+npm install --global github:Rayha33/relaymesh
+mkdir relaymesh-workspace && cd relaymesh-workspace
+relaymesh demo
+```
+
+Open [http://127.0.0.1:4317](http://127.0.0.1:4317). In another terminal,
+run `relaymesh token` to get the administrator token. The installed package
+contains the production dashboard, CLI, TypeScript SDK, and MCP bridge.
+
+Developer checkout:
+
 ```bash
 git clone https://github.com/Rayha33/relaymesh.git
 cd relaymesh
@@ -96,6 +110,10 @@ Ready-to-edit examples:
 - [Claude Desktop configuration](examples/mcp/claude-desktop.example.json)
 - [Codex configuration](examples/mcp/codex.example.toml)
 
+The examples use the globally installed `relaymesh-mcp` executable. From a
+source checkout, replace the command with `npm`, use `["run", "mcp"]` as the
+arguments, and set the checkout as the working directory.
+
 The bridge exposes:
 
 - `relay_status`
@@ -111,10 +129,14 @@ The bridge exposes:
 It also exposes the `relaymesh_agent_protocol` prompt, which teaches a model the
 cooperation and recovery rules.
 
+Runtime capabilities and transport metadata are discoverable at
+`/.well-known/relaymesh.json`. RelayMesh does not advertise an A2A Agent Card
+until its planned A2A transport is implemented.
+
 ### TypeScript SDK
 
 ```ts
-import { RelayAgentClient } from "./src/sdk/index.js";
+import { RelayAgentClient } from "relaymesh";
 
 const agent = new RelayAgentClient(agentId, agentKey);
 const { session } = await agent.join(missionId, {
@@ -126,6 +148,7 @@ const { session } = await agent.join(missionId, {
 
 const claim = await session.claim();
 if (claim) {
+  const retryKey = crypto.randomUUID();
   await session.checkpoint(claim.task.id, {
     leaseId: claim.lease.id,
     fencingToken: claim.lease.fencingToken,
@@ -134,6 +157,9 @@ if (claim) {
     decisions: [],
     artifactIds: [],
     opaqueState: null,
+  }, {
+    // Reuse this key if the request times out and must be retried.
+    idempotencyKey: retryKey,
   });
 }
 ```
@@ -227,6 +253,9 @@ The compose file binds RelayMesh to localhost and persists `/app/data`.
 
 | Command | Purpose |
 | --- | --- |
+| `relaymesh start` | Start an installed production runtime |
+| `relaymesh demo` | Seed a demo and start an installed runtime |
+| `relaymesh-mcp` | Connect an installed AI client over MCP |
 | `npm run dev` | Run API and dashboard with live reload |
 | `npm run build` | Produce the production server and web bundle |
 | `npm start` | Start the production runtime |

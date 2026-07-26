@@ -161,13 +161,14 @@ describe("RelayMesh HTTP API", () => {
         })
       ).statusCode,
     ).toBe(401);
-    expect(
-      (
-        await app.inject({
-          method: "GET",
-          url: "/.well-known/agent-card.json",
-        })
-      ).json<{ skills: unknown[] }>().skills,
-    ).toHaveLength(1);
+    const discovery = (
+      await app.inject({
+        method: "GET",
+        url: "/.well-known/relaymesh.json",
+      })
+    ).json<{ protocol: string; primitives: string[] }>();
+    expect(discovery.protocol).toBe("relaymesh/1");
+    expect(discovery.primitives).toContain("checkpoints");
+    expect(discovery.primitives).toContain("recovery");
   });
 });

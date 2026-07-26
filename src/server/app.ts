@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
@@ -147,30 +148,44 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
     time: new Date().toISOString(),
   }));
 
-  app.get("/.well-known/agent-card.json", async () => ({
-    name: "RelayMesh coordination runtime",
-    description:
-      "Durable missions, task leases, checkpoints, messages, artifacts, and crash recovery for heterogeneous AI agents.",
-    url: "/a2a",
-    version: "0.1.0",
-    protocolVersion: "1.0",
-    capabilities: {
-      streaming: false,
-      pushNotifications: false,
-      stateTransitionHistory: true,
-    },
-    defaultInputModes: ["application/json", "text/plain"],
-    defaultOutputModes: ["application/json", "text/plain"],
-    skills: [
-      {
-        id: "coordinate-mission",
-        name: "Coordinate a durable multi-agent mission",
+  app.get("/.well-known/relaymesh.json", async (_request, reply) =>
+    reply
+      .header("cache-control", "public, max-age=300")
+      .send({
+        name: "RelayMesh coordination runtime",
         description:
-          "Join a mission, claim capability-matched tasks, exchange typed messages, checkpoint work, and recover after session loss.",
-        tags: ["coordination", "recovery", "multi-agent"],
-      },
-    ],
-  }));
+          "Durable missions, task leases, checkpoints, messages, artifacts, and crash recovery for heterogeneous AI agents.",
+        version: "0.1.0",
+        protocol: "relaymesh/1",
+        documentationUrl: "https://github.com/Rayha33/relaymesh",
+        transports: {
+          rest: {
+            basePath: "/api/v1",
+            authentication: [
+              "admin-bearer",
+              "agent-key",
+              "session-bearer",
+            ],
+          },
+          mcp: {
+            type: "stdio",
+            command: "relaymesh-mcp",
+          },
+        },
+        primitives: [
+          "missions",
+          "sessions",
+          "tasks",
+          "leases",
+          "fencing-tokens",
+          "checkpoints",
+          "messages",
+          "artifacts",
+          "signed-events",
+          "recovery",
+        ],
+      }),
+  );
 
   const requireAdmin = async (
     request: FastifyRequest,
@@ -447,7 +462,14 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
     },
   );
 
-  const webRoot = resolve(process.cwd(), "dist/web");
+  const installedWebRoot = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../../web",
+  );
+  const workingTreeWebRoot = resolve(process.cwd(), "dist/web");
+  const webRoot = existsSync(resolve(installedWebRoot, "index.html"))
+    ? installedWebRoot
+    : workingTreeWebRoot;
   if (existsSync(webRoot)) {
     await app.register(fastifyStatic, {
       root: webRoot,

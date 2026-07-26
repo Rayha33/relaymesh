@@ -1,9 +1,8 @@
 {
   "mcpServers": {
     "relaymesh": {
-      "command": "npm",
-      "args": ["run", "mcp"],
-      "cwd": "/absolute/path/to/relaymesh",
+      "command": "relaymesh-mcp",
+      "args": [],
       "env": {
         "RELAYMESH_URL": "http://127.0.0.1:4317",
         "RELAYMESH_MISSION_ID": "replace-with-mission-id",

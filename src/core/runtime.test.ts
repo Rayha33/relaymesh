@@ -206,6 +206,51 @@ describe("RelayRuntime", () => {
     expect(runtime.getMission(mission.id).status).toBe("completed");
   });
 
+  it("fails a mission once when recovery exhausts parallel leases", async () => {
+    const { runtime, advance } = createContext();
+    const mission = runtime.createMission({
+      title: "Exhausted recovery",
+      objective: "Fail deterministically when parallel work cannot recover.",
+    });
+    const tasks = ["First fragile task", "Second fragile task"].map((title) =>
+      runtime.createTask(mission.id, {
+        title,
+        description: "Only one attempt is allowed.",
+        parentTaskId: null,
+        priority: 1,
+        requiredCapabilities: ["general"],
+        dependencies: [],
+        assignedRole: null,
+        maxAttempts: 1,
+      }),
+    );
+    const first = await registerAndJoin(
+      runtime,
+      mission.id,
+      "Fragile Worker One",
+      ["general"],
+    );
+    const second = await registerAndJoin(
+      runtime,
+      mission.id,
+      "Fragile Worker Two",
+      ["general"],
+    );
+    expect(runtime.claimTask(first.claims)).not.toBeNull();
+    expect(runtime.claimTask(second.claims)).not.toBeNull();
+
+    advance(3_000);
+    const report = runtime.recover();
+    expect(report.lostSessions).toHaveLength(2);
+    expect(report.failedTasks).toHaveLength(1);
+    expect(report.expiredLeases).toHaveLength(1);
+    expect(runtime.getMission(mission.id).status).toBe("failed");
+    expect(tasks.map((task) => runtime.getTask(task.id).status).sort()).toEqual([
+      "cancelled",
+      "failed",
+    ]);
+  });
+
   it("delivers role messages at least once until acknowledged", async () => {
     const { runtime } = createContext();
     const mission = runtime.createMission({
@@ -445,6 +490,16 @@ describe("RelayRuntime", () => {
       assignedRole: null,
       maxAttempts: 2,
     });
+    const dependent = runtime.createTask(mission.id, {
+      title: "Dependent operation",
+      description: "Cannot run after its dependency is exhausted.",
+      parentTaskId: null,
+      priority: 0,
+      requiredCapabilities: ["general"],
+      dependencies: [task.id],
+      assignedRole: null,
+      maxAttempts: 2,
+    });
     const worker = await registerAndJoin(
       runtime,
       mission.id,
@@ -476,6 +531,8 @@ describe("RelayRuntime", () => {
         "terminal-failure",
       ).status,
     ).toBe("failed");
+    expect(runtime.getMission(mission.id).status).toBe("failed");
+    expect(runtime.getTask(dependent.id).status).toBe("cancelled");
     expect(
       runtime.failTask(
         worker.claims,
@@ -562,6 +619,82 @@ describe("RelayRuntime", () => {
         maxAttempts: 1,
       }),
     ).toThrow(/terminal mission/i);
+    expect(() =>
+      runtime.updateMissionStatus(secondMission.id, "active"),
+    ).toThrow(/cannot transition/i);
+  });
+
+  it("fences active work when an operator cancels its mission", async () => {
+    const { runtime } = createContext();
+    const mission = runtime.createMission({
+      title: "Cancelled operation",
+      objective: "Stop all in-flight work safely.",
+    });
+    const task = runtime.createTask(mission.id, {
+      title: "In-flight task",
+      description: "Must be fenced on cancellation.",
+      parentTaskId: null,
+      priority: 1,
+      requiredCapabilities: ["general"],
+      dependencies: [],
+      assignedRole: null,
+      maxAttempts: 3,
+    });
+    const worker = await registerAndJoin(
+      runtime,
+      mission.id,
+      "Cancellation Worker",
+      ["general"],
+    );
+    const claim = runtime.claimTask(worker.claims)!;
+
+    expect(runtime.updateMissionStatus(mission.id, "cancelled").status).toBe(
+      "cancelled",
+    );
+    expect(runtime.getTask(task.id).status).toBe("cancelled");
+    expect(() =>
+      runtime.completeTask(worker.claims, task.id, {
+        leaseId: claim.lease.id,
+        fencingToken: claim.lease.fencingToken,
+        result: { late: true },
+      }),
+    ).toThrow(/stale/i);
+  });
+
+  it("does not auto-complete paused missions until they resume", async () => {
+    const { runtime } = createContext();
+    const mission = runtime.createMission({
+      title: "Paused completion",
+      objective: "Keep operator control over the terminal transition.",
+    });
+    const task = runtime.createTask(mission.id, {
+      title: "Finish while paused",
+      description: "Complete the task without changing mission state.",
+      parentTaskId: null,
+      priority: 1,
+      requiredCapabilities: ["general"],
+      dependencies: [],
+      assignedRole: null,
+      maxAttempts: 3,
+    });
+    const worker = await registerAndJoin(
+      runtime,
+      mission.id,
+      "Paused Worker",
+      ["general"],
+    );
+    const claim = runtime.claimTask(worker.claims)!;
+    runtime.updateMissionStatus(mission.id, "paused");
+    runtime.completeTask(worker.claims, task.id, {
+      leaseId: claim.lease.id,
+      fencingToken: claim.lease.fencingToken,
+      result: { done: true },
+    });
+
+    expect(runtime.getMission(mission.id).status).toBe("paused");
+    expect(runtime.updateMissionStatus(mission.id, "active").status).toBe(
+      "completed",
+    );
   });
 
   it("rejects empty artifacts and messages not addressed to the recipient", async () => {
