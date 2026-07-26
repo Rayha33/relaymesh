@@ -79,7 +79,7 @@ describe("RelayMesh A2A v1.0 binding", () => {
       capabilities: { streaming: boolean };
     };
     expect(card).toMatchObject({
-      version: "0.4.0",
+      version: "0.5.0",
       capabilities: { streaming: false },
       supportedInterfaces: [
         {
@@ -222,6 +222,7 @@ async function setup(): Promise<Fixture> {
     leaseSweepMs: 1_000,
     leaseDurationMs: 5_000,
     sessionTtlMs: 60_000,
+    roleReservationMs: 900_000,
   });
   await relay.app.listen({ host: "127.0.0.1", port: 0 });
   const address = relay.app.server.address();

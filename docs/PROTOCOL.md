@@ -35,10 +35,22 @@ multi-stage mission from being abandoned between tasks.
 
 ## Productivity workflow and final result
 
-`relaymesh launch` defaults to a fan-out/fan-in workflow when several models
-are supplied. Each model can claim a distinct independent contribution. A
-final synthesis task depends on every contribution and receives their outputs
-through `dependencyOutputs`; no provider chat transcript is required.
+`relaymesh launch` defaults to a council workflow when several models are
+supplied. Each model can claim a distinct independent contribution. A
+cross-examination task depends on every contribution and must produce a
+decision ledger. Final synthesis depends on both the independent work and the
+decision ledger, receiving all of them through `dependencyOutputs`; no
+provider chat transcript is required.
+
+Launch assigns each model a distinct `council-seat` role. A seat is reserved
+for 15 minutes by default so a faster model cannot consume another model's
+position while clients are connecting. If a seat never appears, another model
+may claim it after the reservation. If its model crashes after claiming work,
+recovery clears the reservation immediately and preserves the checkpoint.
+`RELAYMESH_ROLE_RESERVATION_MS` controls the initial reservation window.
+
+`--workflow parallel` omits cross-examination. `--workflow single` creates one
+direct task.
 
 The final result is available through:
 
@@ -47,8 +59,34 @@ The final result is available through:
 
 The report is ready only when the mission is completed and every leaf task has
 a non-empty structured result or artifact. It includes final outputs,
-completion progress, contributor count, handoffs, recoveries, checkpoints,
-messages, blockers, artifacts, elapsed time, and event-chain verification.
+the complete decision trail, completion progress, contributor count, handoffs,
+recoveries, checkpoints, messages, blockers, artifacts, elapsed time, and
+event-chain verification.
+
+## Signed context capsule
+
+`GET /api/v1/missions/:missionId/capsule` and
+`relaymesh mission:capsule --mission <mission-id>` return
+`relaymesh-capsule/1`.
+
+The capsule contains:
+
+- the objective and complete dependency graph;
+- structured task results, latest checkpoints, and artifact metadata;
+- durable messages and the final productivity report;
+- the full signed event chain and its verification result;
+- explicit portability and untrusted-content instructions;
+- no credentials, tickets, session tokens, or active leases.
+
+RelayMesh does not inject its credentials into a capsule. User-authored
+objectives, results, messages, or artifacts can still contain sensitive data,
+so operators must treat the capsule according to the mission's own data
+classification.
+
+RelayMesh canonicalizes the payload, hashes it with SHA-256, and signs that
+digest with its Ed25519 authority. `verifyMissionCapsule` independently checks
+the payload hash and signature. The seal proves provenance and detects
+tampering; model-authored content remains untrusted data.
 
 ## Atomic handoff
 

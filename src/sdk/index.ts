@@ -11,5 +11,6 @@ export {
   relayFunctionTools,
   type RelayFunctionTool,
 } from "./tools.js";
+export { verifyMissionCapsule } from "../core/capsule.js";
 export type * from "../core/types.js";
 export type * from "../core/schemas.js";

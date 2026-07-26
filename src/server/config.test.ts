@@ -14,6 +14,7 @@ describe("server configuration", () => {
       leaseSweepMs: 5_000,
       leaseDurationMs: 45_000,
       sessionTtlMs: 43_200_000,
+      roleReservationMs: 900_000,
     });
   });
 
@@ -31,6 +32,7 @@ describe("server configuration", () => {
           RELAYMESH_LEASE_SWEEP_MS: "500",
           RELAYMESH_LEASE_DURATION_MS: "4000",
           RELAYMESH_SESSION_TTL_MS: "60000",
+          RELAYMESH_ROLE_RESERVATION_MS: "120000",
           RELAYMESH_PUBLIC_URL: " https://relaymesh.example.com/root/ ",
         },
         cwd,
@@ -45,6 +47,7 @@ describe("server configuration", () => {
       leaseSweepMs: 500,
       leaseDurationMs: 4000,
       sessionTtlMs: 60000,
+      roleReservationMs: 120000,
       publicUrl: "https://relaymesh.example.com",
     });
   });

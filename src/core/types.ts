@@ -228,6 +228,13 @@ export interface HandoffResult {
   message: RelayMessage;
 }
 
+export interface MissionTaskRecord {
+  task: Task;
+  checkpoint: Checkpoint | null;
+  artifacts: Artifact[];
+  depth: number;
+}
+
 export interface MissionResultReport {
   mission: Mission;
   ready: boolean;
@@ -240,11 +247,8 @@ export interface MissionResultReport {
     cancelled: number;
     percent: number;
   };
-  finalOutputs: Array<{
-    task: Task;
-    checkpoint: Checkpoint | null;
-    artifacts: Artifact[];
-  }>;
+  decisionTrail: MissionTaskRecord[];
+  finalOutputs: MissionTaskRecord[];
   productivity: {
     contributors: number;
     handoffs: number;
@@ -262,6 +266,38 @@ export interface MissionResultReport {
     reason: string | null;
     headHash: string;
   };
+}
+
+export interface MissionCapsulePayload {
+  protocol: "relaymesh-capsule/1";
+  generatedAt: string;
+  purpose: string;
+  containsRelayCredentials: false;
+  instructions: string[];
+  mission: Mission;
+  state: "in_progress" | "ready" | "terminal_incomplete";
+  workGraph: MissionTaskRecord[];
+  messages: RelayMessage[];
+  result: MissionResultReport;
+  provenance: {
+    eventChain: RelayEvent[];
+    verification: MissionResultReport["integrity"];
+  };
+}
+
+export interface MissionCapsule extends MissionCapsulePayload {
+  seal: {
+    algorithm: "Ed25519";
+    publicKey: string;
+    payloadHash: string;
+    signature: string;
+  };
+}
+
+export interface CapsuleVerification {
+  valid: boolean;
+  reason: string | null;
+  payloadHash: string;
 }
 
 export interface RecoveryReport {

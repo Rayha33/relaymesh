@@ -22,6 +22,36 @@ describe("productivity workflow planning", () => {
     expect(tasks[3]?.description).toContain("dependencyOutputs");
   });
 
+  it("forces council workflows through cross-examination before synthesis", () => {
+    const tasks = planProductivityWorkflow({
+      objective: "Reach a defensible decision.",
+      contributorCount: 3,
+      mode: "council",
+    });
+    expect(tasks).toHaveLength(5);
+    expect(tasks[3]).toMatchObject({
+      key: "convergence",
+      title: "Cross-examine the council",
+      dependencyKeys: [
+        "contribution-1",
+        "contribution-2",
+        "contribution-3",
+      ],
+    });
+    expect(tasks[3]?.description).toContain("disagreements");
+    expect(tasks.every((task) => task.priority >= -100 && task.priority <= 100))
+      .toBe(true);
+    expect(tasks[4]).toMatchObject({
+      key: "final",
+      dependencyKeys: [
+        "contribution-1",
+        "contribution-2",
+        "contribution-3",
+        "convergence",
+      ],
+    });
+  });
+
   it("keeps one-model and explicit single workflows lean", () => {
     expect(
       planProductivityWorkflow({

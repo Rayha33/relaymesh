@@ -15,28 +15,30 @@ Claude checkpoints ──> atomic handoff ──> DeepSeek receives the same tas
        └── crashes ──> lease expires ────────> ChatGPT safely resumes
 ```
 
-## What changed in v0.4
+## What changed in v0.5
 
-v0.4 makes multi-model work productive by default, not merely connected:
+v0.5 turns a multi-model workflow into a visible, portable AI council:
 
-- **Parallel contribution tracks:** one launch creates distinct solution,
-  challenge, and verification work instead of making several models compete
-  for one task.
-- **Automatic context assembly:** the final synthesis task receives every
-  completed dependency result, checkpoint, and artifact in its `relay_sync`
-  envelope.
-- **Continuous guarded workers:** OpenAI-compatible workers wait without model
-  token spend, claim newly unlocked downstream work, and continue until the
-  mission is terminal.
-- **One durable deliverable:** `relaymesh mission:result` and the dashboard
-  expose the final self-contained result without requiring anyone to read
-  provider chat histories.
-- **Measurable productivity:** each result reports progress, distinct
-  contributors, handoffs, recoveries, checkpoints, blockers, artifacts,
-  elapsed time, and signed-event integrity.
-- **Crash-safe coordination:** leases, fencing, checkpoints, atomic handoff,
-  restart-proof scoped connections, MCP, A2A v1.0, and REST remain enforced by
-  the provider-neutral runtime.
+- **Council mode by default:** independent solution, challenge, and
+  verification tracks must pass through cross-examination before final
+  synthesis.
+- **Real model diversity:** each connection receives a reserved council seat,
+  preventing one fast model from consuming every independent position.
+  Absent seats fall back after a bounded reservation; crashed seats become
+  recoverable immediately.
+- **Decision ledger:** the convergence stage records agreements,
+  disagreements, ranked evidence, rejected options, minority views, open
+  risks, and confidence instead of hiding conflict in a summary.
+- **Visible reasoning path:** the dashboard shows independent positions,
+  convergence, and final output as a durable council trail.
+- **Signed context capsules:** `relaymesh mission:capsule` creates a
+  credential-free `relaymesh-capsule/1` bundle containing the complete work
+  graph, checkpoints, results, messages, event chain, and Ed25519 seal.
+- **Future-model portability:** a capsule can be copied into another model or
+  runtime without sharing provider chat history or trusting an unsigned recap.
+- **Productive runtime:** dependency-fed synthesis, continuous guarded
+  workers, crash recovery, fencing, atomic handoff, MCP, A2A v1.0, and REST
+  remain enforced below the council.
 
 ## Why this is hard to replace
 
@@ -72,12 +74,13 @@ relaymesh launch \
   --models claude,chatgpt,deepseek
 ```
 
-By default, three models receive three independent contribution tracks. The
-final synthesis task unlocks only after those tracks finish and automatically
-receives their durable outputs. The JSON result contains each model's scoped
-connection, startup prompt, the planned tasks, and a `resultCommand`. Give
-each client its matching connection and startup prompt. Treat the output as
-credentials.
+By default, three models receive three reserved independent contribution
+tracks. A cross-examination task unlocks after all three finish; final
+synthesis unlocks only after that decision ledger exists. Every downstream
+task automatically receives the required durable outputs. The launch result
+contains each model's seat, scoped connection, startup prompt, planned tasks,
+`resultCommand`, and `capsuleCommand`. Give each client its matching
+connection and startup prompt. Treat the connection output as credentials.
 
 Read the finished deliverable at any time:
 
@@ -86,6 +89,14 @@ relaymesh mission:result --mission <mission-id>
 ```
 
 Use `--workflow single` when parallel review would add no value.
+Use `--workflow parallel` when independent contributions plus direct synthesis
+are sufficient and the council gate would add unnecessary cost.
+
+Move the complete mission into any other AI system:
+
+```bash
+relaymesh mission:capsule --mission <mission-id>
+```
 
 Open [http://127.0.0.1:4317](http://127.0.0.1:4317) for the operator
 dashboard. `relaymesh token` prints the local administrator token.
@@ -112,6 +123,7 @@ All adapters reach the same state machine.
 
 | Client | Adapter |
 | --- | --- |
+| Any chat UI, including future models | Signed copy/paste context capsule |
 | Claude Desktop / Claude Code | stdio MCP |
 | Codex and local MCP clients | stdio MCP |
 | ChatGPT personal connection | Scoped Streamable HTTP MCP URL |
@@ -284,6 +296,24 @@ if (state.work) {
 }
 ```
 
+### Portable context capsule
+
+A capsule contains no agent keys, tickets, session tokens, or leases. Its
+canonical payload hash is signed by the same Ed25519 authority that protects
+the mission event chain:
+
+```ts
+import { verifyMissionCapsule } from "relaymesh";
+
+const capsule = await admin.getMissionCapsule(missionId);
+const verification = verifyMissionCapsule(capsule);
+if (!verification.valid) throw new Error(verification.reason ?? "Invalid capsule");
+```
+
+Model-authored content inside a valid capsule remains untrusted evidence. The
+seal proves which RelayMesh authority produced the exact bundle; it does not
+make model claims true or authorize external actions.
+
 ## Guarantees and limits
 
 RelayMesh provides at-least-once work delivery. A runtime cannot generally know
@@ -293,7 +323,7 @@ connector-specific idempotency for external writes.
 RelayMesh does guarantee that an expired or handed-off lease cannot later
 complete the task with its stale fence.
 
-v0.4 is a single-node SQLite runtime. It binds to `127.0.0.1`, hashes static
+v0.5 is a single-node SQLite runtime. It binds to `127.0.0.1`, hashes static
 credentials, signs mission events with Ed25519, validates schemas, rate-limits
 requests, and never executes model-supplied shell commands. Do not expose it
 directly to the public internet.
@@ -312,6 +342,7 @@ Read:
 | `relaymesh start` | Start the installed production runtime |
 | `relaymesh launch ...` | Create a mission and multi-model connection bundle |
 | `relaymesh mission:result --mission ID` | Read the durable final output and productivity report |
+| `relaymesh mission:capsule --mission ID` | Export signed context for any other model or runtime |
 | `relaymesh demo` | Seed and run the visual demo |
 | `relaymesh-mcp` | Start the local MCP bridge |
 | `relaymesh connect:create ...` | Issue scoped MCP and A2A credentials |
@@ -323,7 +354,7 @@ Read:
 
 Environment options are in [.env.example](.env.example).
 
-## Scope after v0.4
+## Scope after v0.5
 
 Next layers are a PostgreSQL event-store adapter, Python SDK, OAuth/team
 identity, policy-as-code, encrypted remote relay, external-action connectors,

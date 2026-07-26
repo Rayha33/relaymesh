@@ -29,6 +29,7 @@ import {
   Search,
   ServerCog,
   ShieldCheck,
+  Sparkles,
   Terminal,
   UsersRound,
   X,
@@ -505,6 +506,9 @@ function MissionPage({
     "result" | "tasks" | "sessions" | "messages" | "artifacts"
   >("result");
   const [showTask, setShowTask] = useState(false);
+  const [capsuleState, setCapsuleState] = useState<
+    "idle" | "copying" | "copied" | "failed"
+  >("idle");
   const load = useCallback(() => {
     void Promise.all([
       api.mission(missionId),
@@ -523,6 +527,16 @@ function MissionPage({
     snapshot.tasks.length === 0
       ? 0
       : Math.round((completed / snapshot.tasks.length) * 100);
+  const copyCapsule = async () => {
+    setCapsuleState("copying");
+    try {
+      const capsule = await api.missionCapsule(missionId);
+      await copyText(JSON.stringify(capsule, null, 2));
+      setCapsuleState("copied");
+    } catch {
+      setCapsuleState("failed");
+    }
+  };
 
   return (
     <div className="page-stack">
@@ -574,7 +588,11 @@ function MissionPage({
           )}
         </div>
         {tab === "result" && result !== null && (
-          <MissionResultView report={result} />
+          <MissionResultView
+            report={result}
+            capsuleState={capsuleState}
+            onCopyCapsule={() => void copyCapsule()}
+          />
         )}
         {tab === "tasks" && <TaskTable tasks={snapshot.tasks} />}
         {tab === "sessions" && <SessionTable sessions={snapshot.sessions} />}
@@ -638,7 +656,15 @@ function MissionPage({
   );
 }
 
-function MissionResultView({ report }: { report: MissionResultReport }) {
+function MissionResultView({
+  report,
+  capsuleState,
+  onCopyCapsule,
+}: {
+  report: MissionResultReport;
+  capsuleState: "idle" | "copying" | "copied" | "failed";
+  onCopyCapsule: () => void;
+}) {
   return (
     <div className="result-view">
       <section className={`result-status ${report.ready ? "ready" : ""}`}>
@@ -654,10 +680,20 @@ function MissionResultView({ report }: { report: MissionResultReport }) {
             {report.productivity.contributors} contributing sessions
           </span>
         </div>
-        <span className={`integrity-pill ${report.integrity.valid ? "valid" : "invalid"}`}>
-          {report.integrity.valid ? <Check size={13} /> : <X size={13} />}
-          {report.integrity.valid ? "Verified" : "Invalid chain"}
-        </span>
+        <div className="result-actions">
+          <span className={`integrity-pill ${report.integrity.valid ? "valid" : "invalid"}`}>
+            {report.integrity.valid ? <Check size={13} /> : <X size={13} />}
+            {report.integrity.valid ? "Verified" : "Invalid chain"}
+          </span>
+          <button
+            className="capsule-button"
+            disabled={capsuleState === "copying"}
+            onClick={onCopyCapsule}
+          >
+            {capsuleState === "copied" ? <Check size={13} /> : <Clipboard size={13} />}
+            {capsuleLabel(capsuleState)}
+          </button>
+        </div>
       </section>
       <div className="result-metrics">
         <MiniStat
@@ -681,6 +717,37 @@ function MissionResultView({ report }: { report: MissionResultReport }) {
           value={report.productivity.checkpoints}
         />
       </div>
+      {report.decisionTrail.length > 0 && (
+        <section className="council-trail">
+          <div className="council-trail-head">
+            <div>
+              <Sparkles size={16} />
+              <span>COUNCIL DECISION TRAIL</span>
+            </div>
+            <small>
+              Independent evidence → cross-examination → synthesis
+            </small>
+          </div>
+          <div className="council-flow">
+            {report.decisionTrail.map(({ task, depth }) => (
+              <article
+                className={`council-node ${depth > 0 ? "convergence" : ""}`}
+                key={task.id}
+              >
+                <div className="council-node-top">
+                  <span>{depth === 0 ? "INDEPENDENT" : "CONVERGENCE"}</span>
+                  <StatusBadge status={task.status} />
+                </div>
+                <strong>{task.title}</strong>
+                <p>{decisionSummary(task)}</p>
+                <small>
+                  {task.dependencies.length} inputs · depth {depth}
+                </small>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
       <div className="final-output-list">
         {report.finalOutputs.map(({ task, checkpoint, artifacts }) => (
           <article className="final-output" key={task.id}>
@@ -707,6 +774,62 @@ function MissionResultView({ report }: { report: MissionResultReport }) {
       </div>
     </div>
   );
+}
+
+function decisionSummary(task: Task): string {
+  if (task.result === null) {
+    return task.status === "queued"
+      ? "Waiting for its dependencies."
+      : "No durable result yet.";
+  }
+  for (const key of [
+    "recommendedDecision",
+    "deliverable",
+    "conclusion",
+    "summary",
+  ]) {
+    const value = task.result[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  const agreements = task.result.agreements;
+  const disagreements = task.result.disagreements;
+  if (Array.isArray(agreements) || Array.isArray(disagreements)) {
+    return `${Array.isArray(agreements) ? agreements.length : 0} agreements · ${
+      Array.isArray(disagreements) ? disagreements.length : 0
+    } disagreements preserved`;
+  }
+  return `${Object.keys(task.result).length} structured evidence fields preserved`;
+}
+
+function capsuleLabel(
+  state: "idle" | "copying" | "copied" | "failed",
+): string {
+  if (state === "copying") return "Sealing capsule…";
+  if (state === "copied") return "Capsule copied";
+  if (state === "failed") return "Copy failed";
+  return "Copy context capsule";
+}
+
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard !== undefined) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Fall through to the local document copy path.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard is unavailable");
 }
 
 function AgentsPage() {

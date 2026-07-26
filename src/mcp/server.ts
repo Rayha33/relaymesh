@@ -48,7 +48,7 @@ export function createRelayMcpServer(
   const server = new McpServer(
     {
       name: "relaymesh",
-      version: "0.4.0",
+      version: "0.5.0",
     },
     {
       instructions: [

@@ -26,6 +26,7 @@ import type {
   ConnectionTicket,
   HandoffResult,
   Mission,
+  MissionCapsule,
   MissionResultReport,
   MissionSnapshot,
   RecoveryReport,
@@ -209,6 +210,14 @@ export class RelayAdminClient extends HttpClient {
   getMissionResult(missionId: string): Promise<MissionResultReport> {
     return this.request(
       `/api/v1/missions/${missionId}/result`,
+      { method: "GET" },
+      this.auth,
+    );
+  }
+
+  getMissionCapsule(missionId: string): Promise<MissionCapsule> {
+    return this.request(
+      `/api/v1/missions/${missionId}/capsule`,
       { method: "GET" },
       this.auth,
     );

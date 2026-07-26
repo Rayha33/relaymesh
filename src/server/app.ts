@@ -70,6 +70,7 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
     heartbeatTimeoutMs: config.heartbeatTimeoutMs,
     leaseDurationMs: config.leaseDurationMs,
     sessionTtlMs: config.sessionTtlMs,
+    roleReservationMs: config.roleReservationMs,
     ...(config.adminToken === undefined
       ? {}
       : { adminToken: config.adminToken }),
@@ -150,7 +151,7 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
   app.get("/health", async () => ({
     status: "ok",
     service: "relaymesh",
-    version: "0.4.0",
+    version: "0.5.0",
     time: new Date().toISOString(),
   }));
 
@@ -160,8 +161,8 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
       .send({
         name: "RelayMesh coordination runtime",
         description:
-          "Durable missions, task leases, checkpoints, messages, artifacts, and crash recovery for heterogeneous AI agents.",
-        version: "0.4.0",
+          "Durable AI councils, signed context capsules, task leases, checkpoints, and crash recovery for heterogeneous agents.",
+        version: "0.5.0",
         protocol: "relaymesh/2",
         documentationUrl: "https://github.com/Rayha33/relaymesh",
         transports: {
@@ -212,6 +213,8 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
           "signed-events",
           "recovery",
           "atomic-handoff",
+          "council-workflows",
+          "signed-context-capsules",
         ],
       }),
   );
@@ -336,6 +339,11 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
     "/api/v1/missions/:missionId/result",
     { onRequest: requireAdmin },
     async (request) => runtime.getMissionResult(request.params.missionId),
+  );
+  app.get<{ Params: { missionId: string } }>(
+    "/api/v1/missions/:missionId/capsule",
+    { onRequest: requireAdmin },
+    async (request) => runtime.getMissionCapsule(request.params.missionId),
   );
   app.patch<{ Params: { missionId: string } }>(
     "/api/v1/missions/:missionId",

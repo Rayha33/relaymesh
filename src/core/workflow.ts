@@ -1,4 +1,4 @@
-export type WorkflowMode = "parallel" | "single";
+export type WorkflowMode = "council" | "parallel" | "single";
 
 export interface WorkflowTaskPlan {
   key: string;
@@ -73,19 +73,41 @@ export function planProductivityWorkflow(input: {
     },
   );
 
+  const contributionKeys = contributions.map((task) => task.key);
+  const convergence: WorkflowTaskPlan | null =
+    input.mode === "council"
+      ? {
+          key: "convergence",
+          title: "Cross-examine the council",
+          description: [
+            `Mission objective: ${input.objective}`,
+            "The relay_sync work object contains every independent contribution in dependencyOutputs.",
+            "Act as a rigorous council moderator. Compare claims, expose contradictions, rank evidence, reject weak options, and preserve material minority views.",
+            "Do not create the final deliverable yet. Complete with JSON containing: agreements, disagreements, evidenceRankings, rejectedOptions, unresolvedRisks, confidence (0-100), and recommendedDecision.",
+          ].join("\n\n"),
+          priority: 100,
+          dependencyKeys: contributionKeys,
+        }
+      : null;
+  const finalDependencies =
+    convergence === null
+      ? contributionKeys
+      : [...contributionKeys, convergence.key];
+
   return [
     ...contributions,
+    ...(convergence === null ? [] : [convergence]),
     {
       key: "final",
       title: "Synthesize and verify the final deliverable",
       description: [
         `Mission objective: ${input.objective}`,
-        "The relay_sync work object contains dependencyOutputs from every parallel contribution. Reconcile them rather than repeating them.",
-        "Resolve contradictions, retain the strongest evidence, close material gaps, and produce one coherent final deliverable.",
-        "Complete with a JSON result containing: deliverable, evidence, decisions, limitations, and nextActions. The deliverable must be usable without reading the model chats.",
+        "The relay_sync work object contains dependencyOutputs from the independent contributors and, in council mode, their cross-examination.",
+        "Resolve contradictions using the decision ledger, retain the strongest evidence, close material gaps, and produce one coherent final deliverable.",
+        "Complete with a JSON result containing: deliverable, evidence, decisionTrace, confidence (0-100), limitations, and nextActions. The deliverable must be usable without reading the model chats.",
       ].join("\n\n"),
       priority: 100,
-      dependencyKeys: contributions.map((task) => task.key),
+      dependencyKeys: finalDependencies,
     },
   ];
 }

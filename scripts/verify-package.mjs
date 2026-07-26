@@ -72,7 +72,7 @@ try {
     [
       "--input-type=module",
       "--eval",
-      "import { RelayAgentClient, executeRelayFunction, relayFunctionTools } from 'relaymesh'; if (typeof RelayAgentClient !== 'function' || typeof executeRelayFunction !== 'function' || relayFunctionTools.length !== 11) process.exit(1)",
+      "import { RelayAgentClient, executeRelayFunction, relayFunctionTools, verifyMissionCapsule } from 'relaymesh'; if (typeof RelayAgentClient !== 'function' || typeof executeRelayFunction !== 'function' || typeof verifyMissionCapsule !== 'function' || relayFunctionTools.length !== 11) process.exit(1)",
     ],
     installation,
   );
@@ -85,6 +85,7 @@ try {
     !help.includes("  demo\n") ||
     !help.includes("  worker:openai\n") ||
     !help.includes("  mission:result --mission ID\n") ||
+    !help.includes("  mission:capsule --mission ID\n") ||
     !help.includes("  relaymesh <command>")
   ) {
     throw new Error("Packed CLI help is incomplete");

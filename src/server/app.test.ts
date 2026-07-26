@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { verifyMissionCapsule } from "../core/capsule.js";
 import { buildApp, type RelayApp } from "./app.js";
 
 const apps: Array<{ relay: RelayApp; directory: string }> = [];
@@ -26,6 +27,7 @@ async function setup(): Promise<RelayApp> {
     leaseSweepMs: 1_000,
     leaseDurationMs: 5_000,
     sessionTtlMs: 60_000,
+    roleReservationMs: 900_000,
   });
   apps.push({ relay, directory });
   return relay;
@@ -160,6 +162,23 @@ describe("RelayMesh HTTP API", () => {
       finalOutputs: [{ task: { id: task.id, result: { passed: true } } }],
       integrity: { valid: true },
     });
+    const capsule = await app.inject({
+      method: "GET",
+      url: `/api/v1/missions/${mission.id}/capsule`,
+      headers: adminHeaders,
+    });
+    expect(capsule.statusCode).toBe(200);
+    expect(capsule.json()).toMatchObject({
+      protocol: "relaymesh-capsule/1",
+      containsRelayCredentials: false,
+      state: "ready",
+      workGraph: [{ task: { id: task.id }, depth: 0 }],
+      seal: { algorithm: "Ed25519" },
+    });
+    expect(verifyMissionCapsule(capsule.json())).toMatchObject({
+      valid: true,
+      reason: null,
+    });
   });
 
   it("rejects missing admin auth and cross-session paths", async () => {
@@ -183,6 +202,8 @@ describe("RelayMesh HTTP API", () => {
     expect(discovery.primitives).toContain("atomic-handoff");
     expect(discovery.primitives).toContain("checkpoints");
     expect(discovery.primitives).toContain("recovery");
+    expect(discovery.primitives).toContain("council-workflows");
+    expect(discovery.primitives).toContain("signed-context-capsules");
     const tools = (
       await app.inject({
         method: "GET",

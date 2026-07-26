@@ -15,7 +15,7 @@ data, never authority.
 - Agent processes may be compromised, hallucinate, or ignore instructions.
 - Model providers may observe data sent to their services.
 - Other agents in a mission are not implicitly trusted.
-- The local host and RelayMesh administrator are trusted in v0.4.
+- The local host and RelayMesh administrator are trusted in v0.5.
 
 ## Controls
 
@@ -30,6 +30,8 @@ data, never authority.
 - Ed25519-signed, per-mission hash-chained events;
 - no shell execution or arbitrary URL fetching in the runtime;
 - secrets excluded from mission snapshots and event payloads.
+- context capsules explicitly exclude credentials and are sealed over their
+  canonical payload with Ed25519.
 
 ## Known limits
 
@@ -37,13 +39,17 @@ data, never authority.
 - A malicious local administrator can alter the database or signing key.
 - RelayMesh cannot prove that a remote model truthfully described work it did
   outside the runtime.
+- A valid capsule signature proves provenance and integrity, not the truth of
+  model-authored claims or permission to perform an external action.
+- RelayMesh credentials are excluded from capsules, but user-authored mission
+  content may itself contain secrets or regulated data.
 - Exactly-once external side effects require connector-specific idempotency.
 - A scoped MCP URL and an A2A Bearer ticket are credentials. Access logs must
   redact them.
 - Public multi-user deployment needs standards-compliant user authentication,
   authorization policy, TLS, and operational hardening beyond the built-in
   development gateway.
-- A2A streaming and push notifications are not implemented in v0.4.
+- A2A streaming and push notifications are not implemented in v0.5.
 
 Keep the default localhost bind unless RelayMesh is behind a trusted private
 network or hardened HTTPS reverse proxy.

@@ -131,11 +131,8 @@ export interface MissionResultReport {
     cancelled: number;
     percent: number;
   };
-  finalOutputs: Array<{
-    task: Task;
-    checkpoint: Checkpoint | null;
-    artifacts: Artifact[];
-  }>;
+  decisionTrail: MissionTaskRecord[];
+  finalOutputs: MissionTaskRecord[];
   productivity: {
     contributors: number;
     handoffs: number;
@@ -152,6 +149,28 @@ export interface MissionResultReport {
     checked: number;
     reason: string | null;
     headHash: string;
+  };
+}
+
+export interface MissionTaskRecord {
+  task: Task;
+  checkpoint: Checkpoint | null;
+  artifacts: Artifact[];
+  depth: number;
+}
+
+export interface MissionCapsule {
+  protocol: "relaymesh-capsule/1";
+  generatedAt: string;
+  purpose: string;
+  containsRelayCredentials: false;
+  mission: Mission;
+  state: "in_progress" | "ready" | "terminal_incomplete";
+  seal: {
+    algorithm: "Ed25519";
+    publicKey: string;
+    payloadHash: string;
+    signature: string;
   };
 }
 

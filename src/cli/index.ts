@@ -132,7 +132,7 @@ async function runAdminCommand(): Promise<void> {
           csv(option("--capabilities")),
         );
         const workflow = parseWorkflow(
-          option("--workflow") ?? (models.length > 1 ? "parallel" : "single"),
+          option("--workflow") ?? (models.length > 1 ? "council" : "single"),
         );
         const ttlHours = Number.parseInt(
           option("--ttl-hours") ?? "24",
@@ -160,17 +160,27 @@ async function runAdminCommand(): Promise<void> {
             priority: plan.priority,
             requiredCapabilities: capabilities,
             dependencies,
-            assignedRole: null,
+            assignedRole: workflowRoleForTask(
+              plan.key,
+              workflow,
+              role,
+              models.length,
+            ),
             maxAttempts: 10,
           });
           tasksByKey.set(plan.key, task);
         }
         const tasks = [...tasksByKey.values()];
         const finalTask = tasksByKey.get("final")!;
+        const convergenceTask = tasksByKey.get("convergence") ?? null;
         const connections = [];
-        for (const model of models) {
+        for (const [modelIndex, model] of models.entries()) {
+          const connectionRole =
+            workflow === "single"
+              ? role
+              : councilSeatRole(role, modelIndex + 1);
           const registration = await admin.createAgent({
-            name: `${model} ${role}`,
+            name: `${model} ${connectionRole}`,
             provider: providerFor(model),
             defaultModel: model,
             description: `Zero-config ${model} connection for ${title}`,
@@ -180,7 +190,7 @@ async function runAdminCommand(): Promise<void> {
             {
               agentId: registration.agent.id,
               model,
-              role,
+              role: connectionRole,
               capabilities,
               expiresInHours: ttlHours,
             },
@@ -194,7 +204,7 @@ async function runAdminCommand(): Promise<void> {
             baseUrl,
           );
           bearerUrl.searchParams.set("model", model);
-          bearerUrl.searchParams.set("role", role);
+          bearerUrl.searchParams.set("role", connectionRole);
           bearerUrl.searchParams.set(
             "capabilities",
             capabilities.join(","),
@@ -202,10 +212,16 @@ async function runAdminCommand(): Promise<void> {
           connections.push({
             model,
             provider: registration.agent.provider,
+            role: connectionRole,
+            seat: workflow === "single" ? null : modelIndex + 1,
             agentId: registration.agent.id,
             agentKey: registration.agentKey,
-            startupPrompt:
+            startupPrompt: [
+              workflow === "single"
+                ? "You are the sole worker."
+                : `You hold reserved council seat ${String(modelIndex + 1)} of ${String(models.length)}.`,
               "Call relay_sync. Work only on the returned lease, use attached dependencyOutputs, checkpoint durable progress, complete with a self-contained result, then call relay_sync again until the mission is terminal.",
+            ].join(" "),
             scopedMcpUrl: scopedUrl,
             a2a: a2aConnection(issued.ticket),
             bearerMcpUrl: bearerUrl.href,
@@ -217,7 +233,7 @@ async function runAdminCommand(): Promise<void> {
                 RELAYMESH_AGENT_ID: registration.agent.id,
                 RELAYMESH_AGENT_KEY: registration.agentKey,
                 RELAYMESH_MODEL: model,
-                RELAYMESH_ROLE: role,
+                RELAYMESH_ROLE: connectionRole,
                 RELAYMESH_CAPABILITIES: capabilities.join(","),
               },
             },
@@ -231,13 +247,17 @@ async function runAdminCommand(): Promise<void> {
           workflow: {
             mode: workflow,
             parallelContributions:
-              workflow === "parallel" ? Math.min(models.length, tasks.length - 1) : 1,
+              workflow === "single" ? 1 : models.length,
+            convergenceTaskId: convergenceTask?.id ?? null,
             finalTaskId: finalTask.id,
           },
           connections,
           resultCommand: `relaymesh mission:result --mission ${mission.id} --url ${baseUrl}`,
+          capsuleCommand: `relaymesh mission:capsule --mission ${mission.id} --url ${baseUrl}`,
           next:
-            "Give each client its matching connection and startupPrompt. Models work in parallel; the final task automatically receives every dependency output.",
+            workflow === "council"
+              ? "Give each client its matching connection and startupPrompt. Independent work feeds a cross-examination gate, then one final synthesis."
+              : "Give each client its matching connection and startupPrompt. The final task automatically receives every dependency output.",
           warning:
             "This output contains one-time agent keys and scoped URLs. Store it privately.",
         });
@@ -262,6 +282,10 @@ async function runAdminCommand(): Promise<void> {
       }
       case "mission:result": {
         print(await admin.getMissionResult(required("--mission")));
+        break;
+      }
+      case "mission:capsule": {
+        print(await admin.getMissionCapsule(required("--mission")));
         break;
       }
       case "task:create": {
@@ -412,8 +436,33 @@ function defaultCapabilities(values: string[]): string[] {
 }
 
 function parseWorkflow(value: string): WorkflowMode {
-  if (value === "parallel" || value === "single") return value;
-  fail("--workflow must be parallel or single");
+  if (value === "council" || value === "parallel" || value === "single") {
+    return value;
+  }
+  fail("--workflow must be council, parallel, or single");
+}
+
+function councilSeatRole(baseRole: string, seat: number): string {
+  return `${baseRole.slice(0, 60)}:council-seat:${String(seat)}`;
+}
+
+function workflowRoleForTask(
+  key: string,
+  workflow: WorkflowMode,
+  baseRole: string,
+  contributorCount: number,
+): string {
+  if (workflow === "single") return baseRole;
+  if (key.startsWith("contribution-")) {
+    return councilSeatRole(
+      baseRole,
+      Number.parseInt(key.slice("contribution-".length), 10),
+    );
+  }
+  if (key === "convergence") {
+    return councilSeatRole(baseRole, Math.min(2, contributorCount));
+  }
+  return councilSeatRole(baseRole, 1);
 }
 
 function providerFor(model: string): string {
@@ -465,7 +514,7 @@ Commands:
   worker:openai
   launch --objective TEXT [--title TEXT]
          [--models claude,chatgpt,deepseek] [--role ROLE]
-         [--workflow parallel|single]
+         [--workflow council|parallel|single]
          [--capabilities a,b] [--ttl-hours N]
   token
   connect --mission ID --agent ID [--model MODEL] [--role ROLE]
@@ -481,6 +530,7 @@ Commands:
   mission:list
   mission:show --mission ID
   mission:result --mission ID
+  mission:capsule --mission ID
   task:create --mission ID --title TITLE --description TEXT
               [--capabilities a,b] [--dependencies id,id]
               [--role ROLE] [--priority N] [--attempts N]

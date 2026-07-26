@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { verifyMissionCapsule } from "./capsule.js";
 import { RelayError } from "./errors.js";
 import { RelayRuntime } from "./runtime.js";
 import type { SessionClaims } from "./crypto.js";
@@ -31,6 +32,7 @@ function createContext(): TestContext {
     heartbeatTimeoutMs: 1_000,
     leaseDurationMs: 2_000,
     sessionTtlMs: 60_000,
+    roleReservationMs: 500,
     now: () => new Date(current),
   });
   const context = {
@@ -230,6 +232,261 @@ describe("RelayRuntime", () => {
       ],
       productivity: { contributors: 3 },
       integrity: { valid: true },
+    });
+    const capsule = runtime.getMissionCapsule(mission.id);
+    expect(capsule).toMatchObject({
+      protocol: "relaymesh-capsule/1",
+      containsRelayCredentials: false,
+      state: "ready",
+      workGraph: [{ depth: 0 }, { depth: 0 }, { depth: 0 }, { depth: 1 }],
+      result: {
+        ready: true,
+        decisionTrail: [
+          { depth: 0 },
+          { depth: 0 },
+          { depth: 0 },
+        ],
+      },
+      provenance: {
+        verification: { valid: true },
+      },
+      seal: {
+        algorithm: "Ed25519",
+        publicKey: runtime.publicKey,
+      },
+    });
+    expect(verifyMissionCapsule(capsule)).toMatchObject({
+      valid: true,
+      reason: null,
+      payloadHash: capsule.seal.payloadHash,
+    });
+    const tampered = structuredClone(capsule);
+    tampered.mission.objective = "Tampered objective";
+    expect(verifyMissionCapsule(tampered)).toMatchObject({
+      valid: false,
+      reason: "Capsule payload hash does not match its seal",
+    });
+  });
+
+  it("requires council convergence before the final task unlocks", async () => {
+    const { runtime } = createContext();
+    const mission = runtime.createMission({
+      title: "Council mode",
+      objective: "Make one defensible decision.",
+    });
+    const plans = planProductivityWorkflow({
+      objective: mission.objective,
+      contributorCount: 2,
+      mode: "council",
+    });
+    const tasksByKey = new Map<string, ReturnType<typeof runtime.createTask>>();
+    for (const plan of plans) {
+      const task = runtime.createTask(mission.id, {
+        title: plan.title,
+        description: plan.description,
+        parentTaskId: null,
+        priority: plan.priority,
+        requiredCapabilities: ["general"],
+        dependencies: plan.dependencyKeys.map(
+          (key) => tasksByKey.get(key)!.id,
+        ),
+        assignedRole: null,
+        maxAttempts: 3,
+      });
+      tasksByKey.set(plan.key, task);
+    }
+    const workers = await Promise.all(
+      ["Claude", "ChatGPT"].map((name) =>
+        registerAndJoin(runtime, mission.id, name, ["general"]),
+      ),
+    );
+    const contributions = workers.map((worker) =>
+      runtime.syncSession(worker.claims, {
+        autoClaim: true,
+        includeAcknowledged: false,
+      }),
+    );
+    contributions.forEach((envelope, index) => {
+      const work = envelope.work!;
+      runtime.completeTask(workers[index]!.claims, work.task.id, {
+        leaseId: work.lease.id,
+        fencingToken: work.lease.fencingToken,
+        result: {
+          deliverable: `position-${String(index + 1)}`,
+          evidence: [`evidence-${String(index + 1)}`],
+        },
+      });
+    });
+
+    const convergence = runtime.syncSession(workers[0]!.claims, {
+      autoClaim: true,
+      includeAcknowledged: false,
+    });
+    expect(convergence.work).toMatchObject({
+      task: { id: tasksByKey.get("convergence")!.id },
+      dependencyOutputs: [
+        { task: { result: { deliverable: "position-1" } } },
+        { task: { result: { deliverable: "position-2" } } },
+      ],
+    });
+    expect(runtime.getTask(tasksByKey.get("final")!.id).status).toBe(
+      "queued",
+    );
+    runtime.completeTask(
+      workers[0]!.claims,
+      convergence.work!.task.id,
+      {
+        leaseId: convergence.work!.lease.id,
+        fencingToken: convergence.work!.lease.fencingToken,
+        result: {
+          agreements: ["shared fact"],
+          disagreements: ["tradeoff"],
+          recommendedDecision: "position-2 with safeguards",
+          confidence: 82,
+        },
+      },
+    );
+
+    const final = runtime.syncSession(workers[1]!.claims, {
+      autoClaim: true,
+      includeAcknowledged: false,
+    });
+    expect(final.work?.task.id).toBe(tasksByKey.get("final")!.id);
+    expect(final.work?.dependencyOutputs).toHaveLength(3);
+    runtime.completeTask(workers[1]!.claims, final.work!.task.id, {
+      leaseId: final.work!.lease.id,
+      fencingToken: final.work!.lease.fencingToken,
+      result: {
+        deliverable: "defensible council verdict",
+        decisionTrace: ["positions compared", "tradeoff resolved"],
+        confidence: 82,
+      },
+    });
+
+    expect(runtime.getMissionResult(mission.id)).toMatchObject({
+      ready: true,
+      progress: { total: 4, completed: 4, percent: 100 },
+      decisionTrail: [
+        { task: { title: "Produce the primary solution" }, depth: 0 },
+        {
+          task: { title: "Challenge assumptions and failure modes" },
+          depth: 0,
+        },
+        {
+          task: {
+            title: "Cross-examine the council",
+            result: { confidence: 82 },
+          },
+          depth: 1,
+        },
+      ],
+      finalOutputs: [{ depth: 2 }],
+    });
+  });
+
+  it("reserves independent council seats, then falls back if one never joins", async () => {
+    const { runtime, advance } = createContext();
+    const mission = runtime.createMission({
+      title: "Reserved council seats",
+      objective: "Prevent one fast model from consuming every position.",
+    });
+    const first = runtime.createTask(mission.id, {
+      title: "Seat one position",
+      description: "Reserved for the first model.",
+      parentTaskId: null,
+      priority: 100,
+      requiredCapabilities: ["general"],
+      dependencies: [],
+      assignedRole: "worker:council-seat:1",
+      maxAttempts: 3,
+    });
+    const second = runtime.createTask(mission.id, {
+      title: "Seat two position",
+      description: "Reserved for the second model.",
+      parentTaskId: null,
+      priority: 99,
+      requiredCapabilities: ["general"],
+      dependencies: [],
+      assignedRole: "worker:council-seat:2",
+      maxAttempts: 3,
+    });
+    const seatOne = await registerAndJoin(
+      runtime,
+      mission.id,
+      "Claude Seat One",
+      ["general"],
+      "worker:council-seat:1",
+    );
+    const firstClaim = runtime.claimTask(seatOne.claims)!;
+    expect(firstClaim.task.id).toBe(first.id);
+    runtime.completeTask(seatOne.claims, first.id, {
+      leaseId: firstClaim.lease.id,
+      fencingToken: firstClaim.lease.fencingToken,
+      result: { deliverable: "seat-one-position" },
+    });
+
+    expect(
+      runtime.syncSession(seatOne.claims, {
+        autoClaim: true,
+        includeAcknowledged: false,
+      }),
+    ).toMatchObject({ state: "waiting", work: null });
+
+    advance(501);
+    expect(
+      runtime.syncSession(seatOne.claims, {
+        autoClaim: true,
+        includeAcknowledged: false,
+      }).work?.task.id,
+    ).toBe(second.id);
+  });
+
+  it("releases a crashed reserved seat for immediate recovery", async () => {
+    const { runtime } = createContext();
+    const mission = runtime.createMission({
+      title: "Seat recovery",
+      objective: "Keep diversity without sacrificing recovery.",
+    });
+    const task = runtime.createTask(mission.id, {
+      title: "Reserved position",
+      description: "Recover after its preferred model leaves.",
+      parentTaskId: null,
+      priority: 100,
+      requiredCapabilities: ["general"],
+      dependencies: [],
+      assignedRole: "worker:council-seat:2",
+      maxAttempts: 3,
+    });
+    const seatTwo = await registerAndJoin(
+      runtime,
+      mission.id,
+      "ChatGPT Seat Two",
+      ["general"],
+      "worker:council-seat:2",
+    );
+    const fallback = await registerAndJoin(
+      runtime,
+      mission.id,
+      "Claude Seat One",
+      ["general"],
+      "worker:council-seat:1",
+    );
+    const claim = runtime.claimTask(seatTwo.claims)!;
+    runtime.checkpointTask(seatTwo.claims, task.id, {
+      leaseId: claim.lease.id,
+      fencingToken: claim.lease.fencingToken,
+      summary: "Position partially complete.",
+      nextAction: "Resume from this checkpoint.",
+      decisions: [],
+      artifactIds: [],
+      opaqueState: null,
+    });
+    runtime.leaveSession(seatTwo.claims);
+
+    const recovered = runtime.claimTask(fallback.claims)!;
+    expect(recovered).toMatchObject({
+      task: { id: task.id, assignedRole: null },
+      checkpoint: { summary: "Position partially complete." },
     });
   });
 

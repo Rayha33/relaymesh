@@ -16,6 +16,8 @@ heartbeats, recovery, and handoff.
 8. Provider adapters cannot weaken runtime ownership rules.
 9. Downstream tasks receive completed dependency outputs without provider chat.
 10. A mission exposes one durable final result plus measurable productivity.
+11. Multi-model defaults include an explicit disagreement-resolution gate.
+12. Portable context is canonicalized, credential-free, and Ed25519-sealed.
 
 ## Components
 
@@ -62,17 +64,35 @@ leased task, the wrapper performs a safe handoff with the last model output as
 the recovery checkpoint. After a terminal task action, it waits without a
 model call, claims newly unlocked work, and continues until the mission ends.
 
-## Default productivity workflow
+## Default council workflow
 
 ```text
 primary solution ────────┐
-failure-mode challenge ──┼──> synthesis + verification ──> durable result
-evidence and tests ──────┘
+failure-mode challenge ──┼──> cross-examination ──> synthesis ──> result
+evidence and tests ──────┘            │
+           └──────────────────────────┘
 ```
 
-The contribution tasks are independently claimable. The synthesis task cannot
-be leased until all dependencies complete, then receives their structured
-results, latest checkpoints, and task artifacts in one sync envelope.
+The contribution tasks have reserved model seats, preventing one session from
+monopolizing the council. An absent seat becomes claimable after a bounded
+reservation; recovery clears a crashed seat immediately. Cross-examination
+cannot be leased until every contribution completes. Synthesis cannot be
+leased until cross-examination also completes, then receives every structured
+result, latest checkpoint, and task artifact in one sync envelope.
+
+## Portable capsule
+
+```text
+mission snapshot + decision trail + signed events
+                       │ canonical JSON + SHA-256
+                       ▼
+            Ed25519-sealed context capsule
+                       │
+        Claude · ChatGPT · DeepSeek · future model
+```
+
+The capsule is a read-only context transfer artifact, not a credential or a
+task lease. Its signature can be verified independently by the TypeScript SDK.
 
 ## State machines
 

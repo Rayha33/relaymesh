@@ -10,6 +10,7 @@ export interface RelayConfig {
   leaseSweepMs: number;
   leaseDurationMs: number;
   sessionTtlMs: number;
+  roleReservationMs: number;
   publicUrl?: string;
 }
 
@@ -46,6 +47,11 @@ export function loadConfig(
       env.RELAYMESH_SESSION_TTL_MS,
       12 * 60 * 60 * 1_000,
       "RELAYMESH_SESSION_TTL_MS",
+    ),
+    roleReservationMs: parseInteger(
+      env.RELAYMESH_ROLE_RESERVATION_MS,
+      15 * 60 * 1_000,
+      "RELAYMESH_ROLE_RESERVATION_MS",
     ),
   };
   if (adminToken !== undefined && adminToken.length > 0) {
