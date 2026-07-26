@@ -2,6 +2,7 @@ import type {
   Agent,
   Event,
   Mission,
+  MissionResultReport,
   MissionSnapshot,
   Overview,
   Task,
@@ -77,6 +78,8 @@ export const api = {
   missions: () => request<Mission[]>("/api/v1/missions"),
   mission: (missionId: string) =>
     request<MissionSnapshot>(`/api/v1/missions/${missionId}`),
+  missionResult: (missionId: string) =>
+    request<MissionResultReport>(`/api/v1/missions/${missionId}/result`),
   createMission: (input: { title: string; objective: string }) =>
     request<Mission>("/api/v1/missions", {
       method: "POST",

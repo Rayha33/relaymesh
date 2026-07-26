@@ -43,6 +43,7 @@ import type {
   HandoffResult,
   Lease,
   Mission,
+  MissionResultReport,
   MissionSnapshot,
   RecoveryReport,
   RelayMessage,
@@ -1111,6 +1112,7 @@ export class RelayRuntime {
               ? "No prior checkpoint exists; start from the task description."
               : `Resume from checkpoint ${work!.checkpoint.id}: ${work!.checkpoint.nextAction}`,
             "Checkpoint durable progress and use the current lease ID and fencing token for every task mutation.",
+            "After completing, failing, or handing off this task, call relay_sync again so unlocked downstream work is not abandoned.",
           ]
         : state === "mission_terminal"
           ? [`Mission is ${mission.status}; do not claim new work.`]
@@ -1120,6 +1122,13 @@ export class RelayRuntime {
     if (inbox.some((message) => message.intent === "blocker")) {
       instructions.unshift(
         "A blocker is waiting in the durable inbox; address it before optional work.",
+      );
+    }
+    if ((work?.dependencyOutputs.length ?? 0) > 0) {
+      instructions.splice(
+        1,
+        0,
+        `Use the ${String(work!.dependencyOutputs.length)} completed dependency outputs attached to this work. Reconcile them; do not repeat their work.`,
       );
     }
 
@@ -1281,6 +1290,7 @@ export class RelayRuntime {
         heartbeatAt: atIso,
       },
       checkpoint: this.getLatestCheckpoint(task.id),
+      dependencyOutputs: this.getDependencyOutputs(task),
     };
     this.saveIdempotent(
       claims.sessionId,
@@ -2211,6 +2221,92 @@ export class RelayRuntime {
     };
   }
 
+  getMissionResult(missionId: string): MissionResultReport {
+    const snapshot = this.getMissionSnapshot(missionId);
+    const events = this.events.list(missionId, 100_000);
+    const dependencyIds = new Set(
+      snapshot.tasks.flatMap((task) => task.dependencies),
+    );
+    const finalTasks = snapshot.tasks.filter(
+      (task) => !dependencyIds.has(task.id),
+    );
+    const finalOutputs = finalTasks.map((task) => ({
+      task,
+      checkpoint: this.getLatestCheckpoint(task.id),
+      artifacts: snapshot.artifacts.filter(
+        (artifact) => artifact.taskId === task.id,
+      ),
+    }));
+    const count = (statuses: Task["status"][]): number =>
+      snapshot.tasks.filter((task) => statuses.includes(task.status)).length;
+    const completed = count(["completed"]);
+    const contributors = new Set(
+      events
+        .filter(
+          (event) =>
+            event.actorType === "agent" &&
+            [
+              "task.checkpointed",
+              "task.handed_off",
+              "task.completed",
+            ].includes(event.type),
+        )
+        .map((event) => event.actorId),
+    );
+    const eventCount = (type: string): number =>
+      events.filter((event) => event.type === type).length;
+    const verification = this.events.verify(missionId);
+    return {
+      mission: snapshot.mission,
+      ready:
+        snapshot.mission.status === "completed" &&
+        finalOutputs.length > 0 &&
+        finalOutputs.every(
+          ({ task, artifacts }) =>
+            task.status === "completed" &&
+            ((task.result !== null &&
+              Object.keys(task.result).length > 0) ||
+              artifacts.length > 0),
+        ),
+      progress: {
+        total: snapshot.tasks.length,
+        completed,
+        active: count(["leased", "running"]),
+        queued: count(["queued"]),
+        failed: count(["failed"]),
+        cancelled: count(["cancelled"]),
+        percent:
+          snapshot.tasks.length === 0
+            ? 0
+            : Math.round((completed / snapshot.tasks.length) * 100),
+      },
+      finalOutputs,
+      productivity: {
+        contributors: contributors.size,
+        handoffs: eventCount("task.handed_off"),
+        recoveredTasks: eventCount("task.recovered"),
+        checkpoints: eventCount("task.checkpointed"),
+        messages: eventCount("message.sent"),
+        blockers: snapshot.messages.filter(
+          (message) => message.intent === "blocker",
+        ).length,
+        artifacts: snapshot.artifacts.length,
+        eventCount: events.length,
+        durationMs: Math.max(
+          0,
+          new Date(snapshot.mission.updatedAt).getTime() -
+            new Date(snapshot.mission.createdAt).getTime(),
+        ),
+      },
+      integrity: {
+        valid: verification.valid,
+        checked: verification.checked,
+        reason: verification.reason,
+        headHash: verification.headHash,
+      },
+    };
+  }
+
   getOverview(): {
     counts: {
       missions: number;
@@ -2371,11 +2467,27 @@ export class RelayRuntime {
     if (row === undefined) {
       return null;
     }
+    const task = this.getTask(row.task_id);
     return {
-      task: this.getTask(row.task_id),
+      task,
       lease: mapLease(row),
       checkpoint: this.getLatestCheckpoint(row.task_id),
+      dependencyOutputs: this.getDependencyOutputs(task),
     };
+  }
+
+  private getDependencyOutputs(task: Task) {
+    const artifacts = this.listArtifacts(task.missionId);
+    return task.dependencies.map((dependencyId) => {
+      const dependency = this.getTask(dependencyId);
+      return {
+        task: dependency,
+        checkpoint: this.getLatestCheckpoint(dependencyId),
+        artifacts: artifacts.filter(
+          (artifact) => artifact.taskId === dependencyId,
+        ),
+      };
+    });
   }
 
   private assertLease(

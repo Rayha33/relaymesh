@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RelayError } from "./errors.js";
 import { RelayRuntime } from "./runtime.js";
 import type { SessionClaims } from "./crypto.js";
+import { planProductivityWorkflow } from "./workflow.js";
 
 interface TestContext {
   runtime: RelayRuntime;
@@ -121,6 +122,115 @@ describe("RelayRuntime", () => {
     });
     expect(second.work?.lease.id).toBe(first.work?.lease.id);
     expect(runtime.getTask(task.id).attempt).toBe(1);
+  });
+
+  it("keeps three models productive in parallel and feeds every result into synthesis", async () => {
+    const { runtime } = createContext();
+    const mission = runtime.createMission({
+      title: "Parallel productivity",
+      objective: "Use every model, then synthesize one durable result.",
+    });
+    const plans = planProductivityWorkflow({
+      objective: mission.objective,
+      contributorCount: 3,
+      mode: "parallel",
+    });
+    const tasksByKey = new Map<string, ReturnType<typeof runtime.createTask>>();
+    for (const plan of plans) {
+      const task = runtime.createTask(mission.id, {
+        title: plan.title,
+        description: plan.description,
+        parentTaskId: null,
+        priority: plan.priority,
+        requiredCapabilities: ["general"],
+        dependencies: plan.dependencyKeys.map(
+          (key) => tasksByKey.get(key)!.id,
+        ),
+        assignedRole: null,
+        maxAttempts: 3,
+      });
+      tasksByKey.set(plan.key, task);
+    }
+    const workers = await Promise.all(
+      ["Claude", "ChatGPT", "DeepSeek"].map((name) =>
+        registerAndJoin(runtime, mission.id, name, ["general"]),
+      ),
+    );
+    const contributions = workers.map((worker) =>
+      runtime.syncSession(worker.claims, {
+        autoClaim: true,
+        includeAcknowledged: false,
+      }),
+    );
+    expect(
+      new Set(contributions.map((envelope) => envelope.work?.task.id)).size,
+    ).toBe(3);
+    expect(
+      contributions.every(
+        (envelope) =>
+          envelope.work !== null &&
+          envelope.work.task.id !== tasksByKey.get("final")!.id,
+      ),
+    ).toBe(true);
+
+    contributions.forEach((envelope, index) => {
+      const work = envelope.work!;
+      runtime.completeTask(workers[index]!.claims, work.task.id, {
+        leaseId: work.lease.id,
+        fencingToken: work.lease.fencingToken,
+        result: {
+          deliverable: `independent-output-${String(index + 1)}`,
+          evidence: [`evidence-${String(index + 1)}`],
+        },
+      });
+    });
+
+    const synthesis = runtime.syncSession(workers[0]!.claims, {
+      autoClaim: true,
+      includeAcknowledged: false,
+    });
+    expect(synthesis.work?.task.id).toBe(tasksByKey.get("final")!.id);
+    expect(
+      synthesis.work?.dependencyOutputs.map(
+        (output) => output.task.result?.deliverable,
+      ),
+    ).toEqual([
+      "independent-output-1",
+      "independent-output-2",
+      "independent-output-3",
+    ]);
+    expect(synthesis.instructions.join(" ")).toContain(
+      "3 completed dependency outputs",
+    );
+    runtime.completeTask(
+      workers[0]!.claims,
+      synthesis.work!.task.id,
+      {
+        leaseId: synthesis.work!.lease.id,
+        fencingToken: synthesis.work!.lease.fencingToken,
+        result: {
+          deliverable: "synthesized and verified output",
+          sourcesUsed: 3,
+        },
+      },
+    );
+
+    expect(runtime.getMissionResult(mission.id)).toMatchObject({
+      ready: true,
+      progress: { total: 4, completed: 4, percent: 100 },
+      finalOutputs: [
+        {
+          task: {
+            result: {
+              deliverable: "synthesized and verified output",
+              sourcesUsed: 3,
+            },
+          },
+        },
+      ],
+      productivity: { contributors: 3 },
+      integrity: { valid: true },
+    });
   });
 
   it("hands checkpointed work to another model atomically", async () => {
@@ -318,7 +428,7 @@ describe("RelayRuntime", () => {
       assignedRole: "builder",
       maxAttempts: 3,
     });
-    runtime.createTask(mission.id, {
+    const second = runtime.createTask(mission.id, {
       title: "Verify UI",
       description: "Run browser validation after implementation.",
       parentTaskId: null,
@@ -340,13 +450,22 @@ describe("RelayRuntime", () => {
     expect(claim?.task.id).toBe(first.id);
     expect(claim?.lease.fencingToken).toBe(1);
 
+    runtime.checkpointTask(builder.claims, first.id, {
+      leaseId: claim!.lease.id,
+      fencingToken: claim!.lease.fencingToken,
+      summary: "Runtime implementation is ready for review.",
+      nextAction: "Verify the completed dependency output.",
+      decisions: [],
+      artifactIds: [],
+      opaqueState: null,
+    });
     runtime.completeTask(
       builder.claims,
       first.id,
       {
         leaseId: claim!.lease.id,
         fencingToken: claim!.lease.fencingToken,
-        result: { tests: "pending" },
+        result: { deliverable: "durable runtime", tests: "pending" },
       },
       "complete-first",
     );
@@ -358,7 +477,43 @@ describe("RelayRuntime", () => {
       ["test.browser"],
       "reviewer",
     );
-    expect(runtime.claimTask(reviewer.claims)?.task.title).toBe("Verify UI");
+    const reviewClaim = runtime.claimTask(reviewer.claims)!;
+    expect(reviewClaim.task.title).toBe("Verify UI");
+    expect(reviewClaim.dependencyOutputs).toMatchObject([
+      {
+        task: {
+          id: first.id,
+          result: { deliverable: "durable runtime", tests: "pending" },
+        },
+        checkpoint: {
+          summary: "Runtime implementation is ready for review.",
+        },
+      },
+    ]);
+    runtime.completeTask(reviewer.claims, second.id, {
+      leaseId: reviewClaim.lease.id,
+      fencingToken: reviewClaim.lease.fencingToken,
+      result: { deliverable: "verified runtime", passed: true },
+    });
+
+    const report = runtime.getMissionResult(mission.id);
+    expect(report).toMatchObject({
+      ready: true,
+      progress: { total: 2, completed: 2, percent: 100 },
+      finalOutputs: [
+        {
+          task: {
+            id: second.id,
+            result: { deliverable: "verified runtime", passed: true },
+          },
+        },
+      ],
+      productivity: {
+        contributors: 2,
+        checkpoints: 1,
+      },
+      integrity: { valid: true },
+    });
   });
 
   it("recovers checkpointed work and rejects the crashed session's stale fence", async () => {

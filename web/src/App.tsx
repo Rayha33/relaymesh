@@ -46,6 +46,7 @@ import type {
   Agent as AgentRecord,
   Event,
   Mission,
+  MissionResultReport,
   MissionSnapshot,
   Overview,
   RelayMessage,
@@ -499,12 +500,19 @@ function MissionPage({
   onBack: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<MissionSnapshot | null>(null);
-  const [tab, setTab] = useState<"tasks" | "sessions" | "messages" | "artifacts">(
-    "tasks",
-  );
+  const [result, setResult] = useState<MissionResultReport | null>(null);
+  const [tab, setTab] = useState<
+    "result" | "tasks" | "sessions" | "messages" | "artifacts"
+  >("result");
   const [showTask, setShowTask] = useState(false);
   const load = useCallback(() => {
-    void api.mission(missionId).then(setSnapshot);
+    void Promise.all([
+      api.mission(missionId),
+      api.missionResult(missionId),
+    ]).then(([nextSnapshot, nextResult]) => {
+      setSnapshot(nextSnapshot);
+      setResult(nextResult);
+    });
   }, [missionId]);
   useEffect(load, [load]);
   if (snapshot === null) return <PageLoader />;
@@ -550,7 +558,7 @@ function MissionPage({
       </section>
       <section className="panel mission-workspace">
         <div className="tab-bar">
-          {(["tasks", "sessions", "messages", "artifacts"] as const).map((item) => (
+          {(["result", "tasks", "sessions", "messages", "artifacts"] as const).map((item) => (
             <button
               className={tab === item ? "active" : ""}
               key={item}
@@ -565,6 +573,9 @@ function MissionPage({
             </button>
           )}
         </div>
+        {tab === "result" && result !== null && (
+          <MissionResultView report={result} />
+        )}
         {tab === "tasks" && <TaskTable tasks={snapshot.tasks} />}
         {tab === "sessions" && <SessionTable sessions={snapshot.sessions} />}
         {tab === "messages" && (
@@ -623,6 +634,77 @@ function MissionPage({
           }}
         />
       )}
+    </div>
+  );
+}
+
+function MissionResultView({ report }: { report: MissionResultReport }) {
+  return (
+    <div className="result-view">
+      <section className={`result-status ${report.ready ? "ready" : ""}`}>
+        {report.ready ? <CheckCircle2 size={28} /> : <Clock3 size={28} />}
+        <div>
+          <strong>
+            {report.ready
+              ? "Final deliverable ready"
+              : `${report.progress.percent}% complete`}
+          </strong>
+          <span>
+            {report.progress.completed}/{report.progress.total} tasks ·{" "}
+            {report.productivity.contributors} contributing sessions
+          </span>
+        </div>
+        <span className={`integrity-pill ${report.integrity.valid ? "valid" : "invalid"}`}>
+          {report.integrity.valid ? <Check size={13} /> : <X size={13} />}
+          {report.integrity.valid ? "Verified" : "Invalid chain"}
+        </span>
+      </section>
+      <div className="result-metrics">
+        <MiniStat
+          icon={UsersRound}
+          label="Contributors"
+          value={report.productivity.contributors}
+        />
+        <MiniStat
+          icon={RefreshCcw}
+          label="Recoveries"
+          value={report.productivity.recoveredTasks}
+        />
+        <MiniStat
+          icon={Link2}
+          label="Handoffs"
+          value={report.productivity.handoffs}
+        />
+        <MiniStat
+          icon={FileKey2}
+          label="Checkpoints"
+          value={report.productivity.checkpoints}
+        />
+      </div>
+      <div className="final-output-list">
+        {report.finalOutputs.map(({ task, checkpoint, artifacts }) => (
+          <article className="final-output" key={task.id}>
+            <div className="final-output-head">
+              <div>
+                <span>FINAL TASK</span>
+                <strong>{task.title}</strong>
+              </div>
+              <StatusBadge status={task.status} />
+            </div>
+            {task.result === null ? (
+              <p>
+                {checkpoint?.nextAction ||
+                  "The final task has not produced a durable result yet."}
+              </p>
+            ) : (
+              <pre>{JSON.stringify(task.result, null, 2)}</pre>
+            )}
+            {artifacts.length > 0 && (
+              <small>{artifacts.length} content-addressed artifacts attached</small>
+            )}
+          </article>
+        ))}
+      </div>
     </div>
   );
 }

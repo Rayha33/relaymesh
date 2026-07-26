@@ -14,6 +14,8 @@ heartbeats, recovery, and handoff.
 6. Connection recovery is persisted, not held in adapter memory.
 7. Messages are typed and durable; artifacts are content-addressed.
 8. Provider adapters cannot weaken runtime ownership rules.
+9. Downstream tasks receive completed dependency outputs without provider chat.
+10. A mission exposes one durable final result plus measurable productivity.
 
 ## Components
 
@@ -26,7 +28,7 @@ Claude · ChatGPT · DeepSeek · Codex · Gemini · local models
 │ authentication · schemas · rate limits · discovery │
 ├─────────────────────────────────────────────────────┤
 │ Canonical relay_sync envelope                       │
-│ mission · peers · inbox · work · checkpoint · fence│
+│ mission · peers · inbox · work · dependencies · fence│
 ├─────────────────────────────────────────────────────┤
 │ Coordination runtime                                │
 │ scheduler · leases · atomic handoff · recovery      │
@@ -46,18 +48,31 @@ connect
   ▼
 relay_sync ── no compatible work ──> waiting ──> relay_sync
   │
-  └── work + checkpoint + fence
+  └── work + checkpoint + dependency outputs + fence
           │
           ├── checkpoint ──> continue
           ├── handoff ─────> target model relay_sync
-          ├── complete
+          ├── complete ────> relay_sync ──> downstream work
           └── crash ───────> expiry ──> new model relay_sync
 ```
 
 The deterministic OpenAI-compatible worker calls sync before the first model
 turn. If the model exits without completing, failing, or handing off its
 leased task, the wrapper performs a safe handoff with the last model output as
-the recovery checkpoint.
+the recovery checkpoint. After a terminal task action, it waits without a
+model call, claims newly unlocked work, and continues until the mission ends.
+
+## Default productivity workflow
+
+```text
+primary solution ────────┐
+failure-mode challenge ──┼──> synthesis + verification ──> durable result
+evidence and tests ──────┘
+```
+
+The contribution tasks are independently claimable. The synthesis task cannot
+be leased until all dependencies complete, then receives their structured
+results, latest checkpoints, and task artifacts in one sync envelope.
 
 ## State machines
 

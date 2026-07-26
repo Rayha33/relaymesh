@@ -100,7 +100,7 @@ export async function registerRelayA2a(
           organization: "RelayMesh open-source project",
           url: "https://github.com/Rayha33/relaymesh",
         },
-        version: "0.3.0",
+        version: "0.4.0",
         documentationUrl: "https://github.com/Rayha33/relaymesh",
         capabilities: {
           streaming: false,

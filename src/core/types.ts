@@ -186,6 +186,13 @@ export interface ClaimResult {
   task: Task;
   lease: Lease;
   checkpoint: Checkpoint | null;
+  dependencyOutputs: DependencyOutput[];
+}
+
+export interface DependencyOutput {
+  task: Task;
+  checkpoint: Checkpoint | null;
+  artifacts: Artifact[];
 }
 
 export interface RelaySyncEnvelope {
@@ -219,6 +226,42 @@ export interface HandoffResult {
   checkpoint: Checkpoint;
   task: Task;
   message: RelayMessage;
+}
+
+export interface MissionResultReport {
+  mission: Mission;
+  ready: boolean;
+  progress: {
+    total: number;
+    completed: number;
+    active: number;
+    queued: number;
+    failed: number;
+    cancelled: number;
+    percent: number;
+  };
+  finalOutputs: Array<{
+    task: Task;
+    checkpoint: Checkpoint | null;
+    artifacts: Artifact[];
+  }>;
+  productivity: {
+    contributors: number;
+    handoffs: number;
+    recoveredTasks: number;
+    checkpoints: number;
+    messages: number;
+    blockers: number;
+    artifacts: number;
+    eventCount: number;
+    durationMs: number;
+  };
+  integrity: {
+    valid: boolean;
+    checked: number;
+    reason: string | null;
+    headHash: string;
+  };
 }
 
 export interface RecoveryReport {

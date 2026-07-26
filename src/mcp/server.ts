@@ -48,7 +48,7 @@ export function createRelayMcpServer(
   const server = new McpServer(
     {
       name: "relaymesh",
-      version: "0.3.0",
+      version: "0.4.0",
     },
     {
       instructions: [
@@ -57,6 +57,7 @@ export function createRelayMcpServer(
         "Checkpoint after meaningful progress and before external side effects.",
         "Use typed messages for requests, challenges, decisions, handoffs, and blockers.",
         "Complete, fail, or hand off leased work with the exact lease ID and fencing token.",
+        "After a terminal task action, call relay_sync again and continue until the mission is terminal.",
         "Never reuse a stale lease after a crash or reconnect.",
       ].join(" "),
     },
@@ -420,7 +421,8 @@ export function createRelayMcpServer(
               "6. Send typed messages when requesting help, challenging a claim, handing off, or reporting a blocker.",
               "7. Complete, fail, or hand off every leased task with its exact lease ID and fencing token.",
               "8. Use relay_handoff when another model or role should continue; never simulate a handoff with chat text alone.",
-              "9. Never reuse a stale lease after a crash or recovery.",
+              "9. After a terminal task action, call relay_sync again and continue until the mission is terminal.",
+              "10. Never reuse a stale lease after a crash or recovery.",
             ].join("\n"),
           },
         },

@@ -58,6 +58,9 @@ export interface Task {
   assignedRole: string | null;
   attempt: number;
   maxAttempts: number;
+  dependencies: string[];
+  result: Record<string, unknown> | null;
+  completedAt: string | null;
   updatedAt: string;
 }
 
@@ -79,10 +82,19 @@ export interface RelayMessage {
 
 export interface Artifact {
   id: string;
+  taskId: string | null;
   name: string;
   mimeType: string;
   sizeBytes: number;
   sha256: string;
+  createdAt: string;
+}
+
+export interface Checkpoint {
+  id: string;
+  taskId: string;
+  summary: string;
+  nextAction: string;
   createdAt: string;
 }
 
@@ -105,6 +117,42 @@ export interface MissionSnapshot {
   messages: RelayMessage[];
   artifacts: Artifact[];
   eventSequence: number;
+}
+
+export interface MissionResultReport {
+  mission: Mission;
+  ready: boolean;
+  progress: {
+    total: number;
+    completed: number;
+    active: number;
+    queued: number;
+    failed: number;
+    cancelled: number;
+    percent: number;
+  };
+  finalOutputs: Array<{
+    task: Task;
+    checkpoint: Checkpoint | null;
+    artifacts: Artifact[];
+  }>;
+  productivity: {
+    contributors: number;
+    handoffs: number;
+    recoveredTasks: number;
+    checkpoints: number;
+    messages: number;
+    blockers: number;
+    artifacts: number;
+    eventCount: number;
+    durationMs: number;
+  };
+  integrity: {
+    valid: boolean;
+    checked: number;
+    reason: string | null;
+    headHash: string;
+  };
 }
 
 export interface Overview {

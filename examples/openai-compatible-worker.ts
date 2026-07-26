@@ -3,6 +3,7 @@ import {
   relayFunctionTools,
 } from "../src/sdk/tools.js";
 import { RelayAgentClient } from "../src/sdk/client.js";
+import type { RelaySyncEnvelope } from "../src/core/types.js";
 
 interface ToolCall {
   id: string;
@@ -35,6 +36,8 @@ const config = {
     .map((value) => value.trim())
     .filter(Boolean),
   maxTurns: positiveInteger("RELAYMESH_MAX_TURNS", 32),
+  idleTimeoutMs: positiveInteger("RELAYMESH_IDLE_TIMEOUT_MS", 120_000),
+  pollIntervalMs: positiveInteger("RELAYMESH_POLL_INTERVAL_MS", 1_500),
 };
 
 const agent = new RelayAgentClient(config.agentId, config.agentKey, {
@@ -56,38 +59,22 @@ const heartbeatTimer = setInterval(() => {
 }, 10_000);
 heartbeatTimer.unref();
 
-const initialEnvelope = await session.sync({
+const initialSync = await session.sync({
   autoClaim: true,
   includeAcknowledged: false,
 });
-const messages: ChatMessage[] = [
-  {
-    role: "system",
-    content: [
-      "You are one worker in a RelayMesh mission shared with other AI model sessions.",
-      "RelayMesh is canonical. The runtime already synchronized and claimed at most one task before this model turn.",
-      "Call relay_sync again whenever state may have changed.",
-      "Checkpoint meaningful progress and before external side effects.",
-      "Use durable typed messages for requests, challenges, decisions, handoffs, and blockers.",
-      "Complete, fail, or hand off every claimed task with its exact lease ID and fencing token.",
-      "Never reuse stale lease data after a reconnect.",
-      "Do not invent task IDs, lease IDs, fencing tokens, messages, or artifacts.",
-    ].join(" "),
-  },
-  {
-    role: "user",
-    content: [
-      `Join mission "${joined.snapshot.mission.title}".`,
-      "The following RelayMesh v2 envelope is authoritative:",
-      JSON.stringify(initialEnvelope),
-    ].join("\n"),
-  },
-];
-
-let taskFinalized = false;
+const initialEnvelope =
+  initialSync.state === "waiting"
+    ? await waitForWork(initialSync)
+    : initialSync;
+let messages = missionConversation(initialEnvelope);
 let lastAssistantContent = "";
 try {
-  for (let turn = 0; turn < config.maxTurns; turn += 1) {
+  for (
+    let turn = 0;
+    initialEnvelope.state === "working" && turn < config.maxTurns;
+    turn += 1
+  ) {
     const assistant = await complete(messages);
     messages.push(assistant);
     if (assistant.content !== null) {
@@ -101,6 +88,7 @@ try {
       break;
     }
 
+    let finalizedThisTurn = false;
     for (const call of toolCalls) {
       try {
         const args = JSON.parse(call.function.arguments) as unknown;
@@ -114,7 +102,7 @@ try {
           tool_call_id: call.id,
           content: JSON.stringify(output),
         });
-        taskFinalized ||= [
+        finalizedThisTurn ||= [
           "relay_complete_task",
           "relay_fail_task",
           "relay_handoff",
@@ -129,19 +117,30 @@ try {
         });
       }
     }
-    if (taskFinalized) {
-      break;
+    if (finalizedThisTurn) {
+      const nextEnvelope = await waitForWork();
+      if (nextEnvelope.state === "mission_terminal") {
+        break;
+      }
+      if (nextEnvelope.work === null) {
+        process.stdout.write(
+          `RelayMesh worker idle timeout after ${String(config.idleTimeoutMs)}ms.\n`,
+        );
+        break;
+      }
+      messages = missionConversation(nextEnvelope);
+      lastAssistantContent = "";
     }
   }
 } finally {
   clearInterval(heartbeatTimer);
-  if (!taskFinalized) {
-    const finalEnvelope = await session
-      .sync({ autoClaim: false, includeAcknowledged: false })
-      .catch(() => null);
-    if (finalEnvelope?.work) {
-      const { task, lease } = finalEnvelope.work;
-      await session.handoff(task.id, {
+  const finalEnvelope = await session
+    .sync({ autoClaim: false, includeAcknowledged: false })
+    .catch(() => null);
+  if (finalEnvelope?.work) {
+    const { task, lease } = finalEnvelope.work;
+    await session
+      .handoff(task.id, {
         leaseId: lease.id,
         fencingToken: lease.fencingToken,
         summary:
@@ -166,9 +165,61 @@ try {
           `RelayMesh automatic handoff failed: ${error instanceof Error ? error.message : String(error)}\n`,
         );
       });
-    }
   }
   await session.leave().catch(() => undefined);
+}
+
+function missionConversation(envelope: RelaySyncEnvelope): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        "You are one worker in a RelayMesh mission shared with other AI model sessions.",
+        "RelayMesh is canonical. The runtime already synchronized and claimed at most one task before this model turn.",
+        "Use dependencyOutputs instead of repeating completed peer work.",
+        "Call relay_sync again whenever state may have changed.",
+        "Checkpoint meaningful progress and before external side effects.",
+        "Use durable typed messages for requests, challenges, decisions, handoffs, and blockers.",
+        "Complete, fail, or hand off every claimed task with its exact lease ID and fencing token.",
+        "Completion results must be self-contained and usable by downstream models.",
+        "Never reuse stale lease data after a reconnect.",
+        "Do not invent task IDs, lease IDs, fencing tokens, messages, or artifacts.",
+      ].join(" "),
+    },
+    {
+      role: "user",
+      content: [
+        `Mission "${joined.snapshot.mission.title}".`,
+        "The following RelayMesh v2 envelope is authoritative:",
+        JSON.stringify(envelope),
+      ].join("\n"),
+    },
+  ];
+}
+
+async function waitForWork(
+  startingEnvelope?: RelaySyncEnvelope,
+): Promise<RelaySyncEnvelope> {
+  const deadline = Date.now() + config.idleTimeoutMs;
+  let envelope =
+    startingEnvelope ??
+    (await session.sync({
+      autoClaim: true,
+      includeAcknowledged: false,
+    }));
+  while (
+    envelope.state === "waiting" &&
+    Date.now() < deadline
+  ) {
+    await delay(
+      Math.min(config.pollIntervalMs, Math.max(1, deadline - Date.now())),
+    );
+    envelope = await session.sync({
+      autoClaim: true,
+      includeAcknowledged: false,
+    });
+  }
+  return envelope;
 }
 
 async function complete(messagesInput: ChatMessage[]): Promise<AssistantMessage> {
@@ -223,4 +274,10 @@ function positiveInteger(name: string, fallback: number): number {
     throw new Error(`${name} must be a positive integer`);
   }
   return parsed;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolveDelay) => {
+    setTimeout(resolveDelay, milliseconds);
+  });
 }

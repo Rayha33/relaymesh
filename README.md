@@ -15,24 +15,28 @@ Claude checkpoints ──> atomic handoff ──> DeepSeek receives the same tas
        └── crashes ──> lease expires ────────> ChatGPT safely resumes
 ```
 
-## What changed in v0.3
+## What changed in v0.4
 
-The first release exposed coordination primitives. v0.3 turns them into an
-enforced workflow:
+v0.4 makes multi-model work productive by default, not merely connected:
 
-- **One-call sync:** `relay_sync` returns mission, peers, inbox, active lease,
-  latest checkpoint, artifacts, heartbeat, and canonical instructions.
-- **No duplicate claims:** reconnecting sync returns the already-owned work.
-- **Atomic handoff:** checkpoint, fence, release, role transfer, and durable
-  notification commit together without spending a failure attempt.
-- **Restart-proof connections:** a scoped ticket's last session is persisted;
-  recovery no longer depends on adapter process memory.
-- **Deterministic worker guard:** if a function-calling model exits without a
-  terminal task action, the wrapper checkpoints and safely hands work back.
-- **A2A v1.0:** public Agent Card plus authenticated HTTP+JSON message, task,
-  list, and cancellation endpoints.
-- **One-command launch:** create a mission, task, agent identities, and
-  Claude/ChatGPT/DeepSeek connection bundles at once.
+- **Parallel contribution tracks:** one launch creates distinct solution,
+  challenge, and verification work instead of making several models compete
+  for one task.
+- **Automatic context assembly:** the final synthesis task receives every
+  completed dependency result, checkpoint, and artifact in its `relay_sync`
+  envelope.
+- **Continuous guarded workers:** OpenAI-compatible workers wait without model
+  token spend, claim newly unlocked downstream work, and continue until the
+  mission is terminal.
+- **One durable deliverable:** `relaymesh mission:result` and the dashboard
+  expose the final self-contained result without requiring anyone to read
+  provider chat histories.
+- **Measurable productivity:** each result reports progress, distinct
+  contributors, handoffs, recoveries, checkpoints, blockers, artifacts,
+  elapsed time, and signed-event integrity.
+- **Crash-safe coordination:** leases, fencing, checkpoints, atomic handoff,
+  restart-proof scoped connections, MCP, A2A v1.0, and REST remain enforced by
+  the provider-neutral runtime.
 
 ## Why this is hard to replace
 
@@ -68,10 +72,20 @@ relaymesh launch \
   --models claude,chatgpt,deepseek
 ```
 
-The JSON result contains a scoped MCP URL, A2A v1.0 connection, bearer MCP
-settings, and local stdio MCP configuration for each model. Give each client
-its matching connection and tell it to call `relay_sync`. Treat the output as
+By default, three models receive three independent contribution tracks. The
+final synthesis task unlocks only after those tracks finish and automatically
+receives their durable outputs. The JSON result contains each model's scoped
+connection, startup prompt, the planned tasks, and a `resultCommand`. Give
+each client its matching connection and startup prompt. Treat the output as
 credentials.
+
+Read the finished deliverable at any time:
+
+```bash
+relaymesh mission:result --mission <mission-id>
+```
+
+Use `--workflow single` when parallel review would add no value.
 
 Open [http://127.0.0.1:4317](http://127.0.0.1:4317) for the operator
 dashboard. `relaymesh token` prints the local administrator token.
@@ -164,8 +178,10 @@ Every model receives the same eleven tools:
 - `relay_acknowledge`
 - `relay_publish_artifact`
 
-The required lifecycle is: sync, work, checkpoint, then complete, fail, or
-handoff. The remote adapter validates credentials on every request.
+The required lifecycle is: sync, work, checkpoint, complete, fail, or hand
+off, then sync again. A continuing session can claim an unlocked downstream
+task; it stops only when the mission is terminal. The remote adapter validates
+credentials on every request.
 
 OpenAI Responses API example:
 
@@ -220,9 +236,10 @@ artifact or an A2A Message when no compatible work is ready.
 ### DeepSeek and OpenAI-compatible models
 
 Strict function schemas are published at
-`/.well-known/relaymesh-tools.json`. The included worker injects the sync
-envelope before the first model turn and safely hands leased work back if the
-model stops without a terminal action:
+`/.well-known/relaymesh-tools.json`. The included worker injects each
+authoritative sync envelope, safely hands leased work back if the model stops
+without a terminal action, and waits for downstream dependencies without
+spending model tokens:
 
 ```bash
 MODEL_API_BASE=https://api.deepseek.com \
@@ -276,7 +293,7 @@ connector-specific idempotency for external writes.
 RelayMesh does guarantee that an expired or handed-off lease cannot later
 complete the task with its stale fence.
 
-v0.3 is a single-node SQLite runtime. It binds to `127.0.0.1`, hashes static
+v0.4 is a single-node SQLite runtime. It binds to `127.0.0.1`, hashes static
 credentials, signs mission events with Ed25519, validates schemas, rate-limits
 requests, and never executes model-supplied shell commands. Do not expose it
 directly to the public internet.
@@ -294,6 +311,7 @@ Read:
 | --- | --- |
 | `relaymesh start` | Start the installed production runtime |
 | `relaymesh launch ...` | Create a mission and multi-model connection bundle |
+| `relaymesh mission:result --mission ID` | Read the durable final output and productivity report |
 | `relaymesh demo` | Seed and run the visual demo |
 | `relaymesh-mcp` | Start the local MCP bridge |
 | `relaymesh connect:create ...` | Issue scoped MCP and A2A credentials |
@@ -305,7 +323,7 @@ Read:
 
 Environment options are in [.env.example](.env.example).
 
-## Scope after v0.3
+## Scope after v0.4
 
 Next layers are a PostgreSQL event-store adapter, Python SDK, OAuth/team
 identity, policy-as-code, encrypted remote relay, external-action connectors,

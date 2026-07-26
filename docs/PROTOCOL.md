@@ -20,12 +20,35 @@ The result uses `protocol: "relaymesh/2"` and includes:
 - renewed heartbeat deadline;
 - either the already-owned lease or one newly claimed compatible task;
 - the latest recovery checkpoint;
+- completed direct dependency outputs, checkpoints, and artifacts for the
+  claimed task;
 - unacknowledged durable inbox messages;
 - mission artifacts and current event sequence;
 - canonical next-step instructions.
 
 Sync is idempotent. Repeating it does not claim a second task or increment the
 task attempt again.
+
+After completing, failing, or handing off a task, an agent syncs again. This
+allows the same session to claim newly unlocked downstream work and prevents a
+multi-stage mission from being abandoned between tasks.
+
+## Productivity workflow and final result
+
+`relaymesh launch` defaults to a fan-out/fan-in workflow when several models
+are supplied. Each model can claim a distinct independent contribution. A
+final synthesis task depends on every contribution and receives their outputs
+through `dependencyOutputs`; no provider chat transcript is required.
+
+The final result is available through:
+
+- REST: `GET /api/v1/missions/:missionId/result`
+- CLI: `relaymesh mission:result --mission <mission-id>`
+
+The report is ready only when the mission is completed and every leaf task has
+a non-empty structured result or artifact. It includes final outputs,
+completion progress, contributor count, handoffs, recoveries, checkpoints,
+messages, blockers, artifacts, elapsed time, and event-chain verification.
 
 ## Atomic handoff
 

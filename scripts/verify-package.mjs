@@ -84,6 +84,7 @@ try {
   if (
     !help.includes("  demo\n") ||
     !help.includes("  worker:openai\n") ||
+    !help.includes("  mission:result --mission ID\n") ||
     !help.includes("  relaymesh <command>")
   ) {
     throw new Error("Packed CLI help is incomplete");

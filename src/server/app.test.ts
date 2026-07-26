@@ -149,6 +149,17 @@ describe("RelayMesh HTTP API", () => {
     expect(snapshot.json<{ mission: { status: string } }>().mission.status).toBe(
       "completed",
     );
+    const result = await app.inject({
+      method: "GET",
+      url: `/api/v1/missions/${mission.id}/result`,
+      headers: adminHeaders,
+    });
+    expect(result.json()).toMatchObject({
+      ready: true,
+      progress: { total: 1, completed: 1, percent: 100 },
+      finalOutputs: [{ task: { id: task.id, result: { passed: true } } }],
+      integrity: { valid: true },
+    });
   });
 
   it("rejects missing admin auth and cross-session paths", async () => {

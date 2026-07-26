@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  planProductivityWorkflow,
+  type WorkflowMode,
+} from "../core/workflow.js";
 import { RelayAdminClient } from "../sdk/client.js";
 
 const args = process.argv.slice(2);
@@ -127,21 +131,42 @@ async function runAdminCommand(): Promise<void> {
         const capabilities = defaultCapabilities(
           csv(option("--capabilities")),
         );
+        const workflow = parseWorkflow(
+          option("--workflow") ?? (models.length > 1 ? "parallel" : "single"),
+        );
         const ttlHours = Number.parseInt(
           option("--ttl-hours") ?? "24",
           10,
         );
         const mission = await admin.createMission({ title, objective });
-        const task = await admin.createTask(mission.id, {
-          title: "Complete the mission objective",
-          description: objective,
-          parentTaskId: null,
-          priority: 100,
-          requiredCapabilities: capabilities,
-          dependencies: [],
-          assignedRole: role,
-          maxAttempts: 10,
+        const taskPlans = planProductivityWorkflow({
+          objective,
+          contributorCount: models.length,
+          mode: workflow,
         });
+        const tasksByKey = new Map<string, Awaited<ReturnType<typeof admin.createTask>>>();
+        for (const plan of taskPlans) {
+          const dependencies = plan.dependencyKeys.map((key) => {
+            const dependency = tasksByKey.get(key);
+            if (dependency === undefined) {
+              throw new Error(`Workflow dependency ${key} was not created`);
+            }
+            return dependency.id;
+          });
+          const task = await admin.createTask(mission.id, {
+            title: plan.title,
+            description: plan.description,
+            parentTaskId: null,
+            priority: plan.priority,
+            requiredCapabilities: capabilities,
+            dependencies,
+            assignedRole: null,
+            maxAttempts: 10,
+          });
+          tasksByKey.set(plan.key, task);
+        }
+        const tasks = [...tasksByKey.values()];
+        const finalTask = tasksByKey.get("final")!;
         const connections = [];
         for (const model of models) {
           const registration = await admin.createAgent({
@@ -179,6 +204,8 @@ async function runAdminCommand(): Promise<void> {
             provider: registration.agent.provider,
             agentId: registration.agent.id,
             agentKey: registration.agentKey,
+            startupPrompt:
+              "Call relay_sync. Work only on the returned lease, use attached dependencyOutputs, checkpoint durable progress, complete with a self-contained result, then call relay_sync again until the mission is terminal.",
             scopedMcpUrl: scopedUrl,
             a2a: a2aConnection(issued.ticket),
             bearerMcpUrl: bearerUrl.href,
@@ -199,10 +226,18 @@ async function runAdminCommand(): Promise<void> {
         print({
           protocol: "relaymesh/2",
           mission,
-          task,
+          task: finalTask,
+          tasks,
+          workflow: {
+            mode: workflow,
+            parallelContributions:
+              workflow === "parallel" ? Math.min(models.length, tasks.length - 1) : 1,
+            finalTaskId: finalTask.id,
+          },
           connections,
+          resultCommand: `relaymesh mission:result --mission ${mission.id} --url ${baseUrl}`,
           next:
-            "Give each client its matching MCP connection. Every model starts with relay_sync and sees the same durable envelope.",
+            "Give each client its matching connection and startupPrompt. Models work in parallel; the final task automatically receives every dependency output.",
           warning:
             "This output contains one-time agent keys and scoped URLs. Store it privately.",
         });
@@ -223,6 +258,10 @@ async function runAdminCommand(): Promise<void> {
       }
       case "mission:show": {
         print(await admin.getMission(required("--mission")));
+        break;
+      }
+      case "mission:result": {
+        print(await admin.getMissionResult(required("--mission")));
         break;
       }
       case "task:create": {
@@ -372,6 +411,11 @@ function defaultCapabilities(values: string[]): string[] {
   return values.length > 0 ? values : ["general"];
 }
 
+function parseWorkflow(value: string): WorkflowMode {
+  if (value === "parallel" || value === "single") return value;
+  fail("--workflow must be parallel or single");
+}
+
 function providerFor(model: string): string {
   const normalized = model.toLowerCase();
   if (normalized.includes("claude")) return "Anthropic";
@@ -421,6 +465,7 @@ Commands:
   worker:openai
   launch --objective TEXT [--title TEXT]
          [--models claude,chatgpt,deepseek] [--role ROLE]
+         [--workflow parallel|single]
          [--capabilities a,b] [--ttl-hours N]
   token
   connect --mission ID --agent ID [--model MODEL] [--role ROLE]
@@ -435,6 +480,7 @@ Commands:
   mission:create --title TITLE --objective OBJECTIVE
   mission:list
   mission:show --mission ID
+  mission:result --mission ID
   task:create --mission ID --title TITLE --description TEXT
               [--capabilities a,b] [--dependencies id,id]
               [--role ROLE] [--priority N] [--attempts N]

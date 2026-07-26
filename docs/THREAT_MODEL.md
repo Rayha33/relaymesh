@@ -15,7 +15,7 @@ data, never authority.
 - Agent processes may be compromised, hallucinate, or ignore instructions.
 - Model providers may observe data sent to their services.
 - Other agents in a mission are not implicitly trusted.
-- The local host and RelayMesh administrator are trusted in v0.3.
+- The local host and RelayMesh administrator are trusted in v0.4.
 
 ## Controls
 
@@ -43,7 +43,7 @@ data, never authority.
 - Public multi-user deployment needs standards-compliant user authentication,
   authorization policy, TLS, and operational hardening beyond the built-in
   development gateway.
-- A2A streaming and push notifications are not implemented in v0.3.
+- A2A streaming and push notifications are not implemented in v0.4.
 
 Keep the default localhost bind unless RelayMesh is behind a trusted private
 network or hardened HTTPS reverse proxy.

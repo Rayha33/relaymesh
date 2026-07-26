@@ -150,7 +150,7 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
   app.get("/health", async () => ({
     status: "ok",
     service: "relaymesh",
-    version: "0.3.0",
+    version: "0.4.0",
     time: new Date().toISOString(),
   }));
 
@@ -161,7 +161,7 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
         name: "RelayMesh coordination runtime",
         description:
           "Durable missions, task leases, checkpoints, messages, artifacts, and crash recovery for heterogeneous AI agents.",
-        version: "0.3.0",
+        version: "0.4.0",
         protocol: "relaymesh/2",
         documentationUrl: "https://github.com/Rayha33/relaymesh",
         transports: {
@@ -229,6 +229,7 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
             "Use durable typed messages to cooperate with other model sessions.",
             "Use relay_handoff to atomically checkpoint and transfer unfinished work.",
             "Complete or fail work with the current lease and fencing token.",
+            "After a terminal task action, call relay_sync again and continue until the mission is terminal.",
           ],
           tools: relayFunctionTools,
         }),
@@ -330,6 +331,11 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
     "/api/v1/missions/:missionId",
     { onRequest: requireAdmin },
     async (request) => runtime.getMissionSnapshot(request.params.missionId),
+  );
+  app.get<{ Params: { missionId: string } }>(
+    "/api/v1/missions/:missionId/result",
+    { onRequest: requireAdmin },
+    async (request) => runtime.getMissionResult(request.params.missionId),
   );
   app.patch<{ Params: { missionId: string } }>(
     "/api/v1/missions/:missionId",
