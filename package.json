@@ -1,6 +1,6 @@
 {
   "name": "relaymesh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "Durable coordination runtime for heterogeneous AI agent sessions.",
   "license": "MIT",

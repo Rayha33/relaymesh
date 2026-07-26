@@ -53,6 +53,14 @@ export const joinSessionSchema = z.object({
   recoveryFromSessionId: z.string().uuid().nullable().default(null),
 });
 
+export const createConnectionTicketSchema = z.object({
+  agentId: z.string().uuid(),
+  model: identifier,
+  role: z.string().trim().min(1).max(80),
+  capabilities: z.array(capability).min(1).max(100),
+  expiresInHours: z.number().int().min(1).max(24 * 30).default(24),
+});
+
 export const checkpointSchema = z.object({
   leaseId: z.string().uuid(),
   fencingToken: z.number().int().positive(),
@@ -113,6 +121,9 @@ export type CreateAgentInput = z.infer<typeof createAgentSchema>;
 export type CreateMissionInput = z.infer<typeof createMissionSchema>;
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 export type JoinSessionInput = z.infer<typeof joinSessionSchema>;
+export type CreateConnectionTicketInput = z.infer<
+  typeof createConnectionTicketSchema
+>;
 export type CheckpointInput = z.infer<typeof checkpointSchema>;
 export type SendMessageInput = z.infer<typeof sendMessageSchema>;
 export type CompleteTaskInput = z.infer<typeof completeTaskSchema>;

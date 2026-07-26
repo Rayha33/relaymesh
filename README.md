@@ -86,9 +86,54 @@ npm start
 The production server hosts the dashboard and API at
 [http://127.0.0.1:4317](http://127.0.0.1:4317).
 
-## Connect an AI model
+## Connect any AI model
 
-### MCP bridge
+Every adapter reaches the same durable mission state. Provider changes do not
+change task ownership, checkpoints, messages, artifacts, or recovery rules.
+
+| Model or client | Best connection |
+| --- | --- |
+| Claude Desktop / Claude Code | Local stdio MCP |
+| Codex and other local MCP clients | Local stdio MCP |
+| ChatGPT personal plugin | Scoped, revocable MCP connection URL |
+| OpenAI Responses API | Bearer-authenticated Streamable HTTP MCP |
+| DeepSeek and OpenAI-compatible APIs | Strict function tools or included worker |
+| Custom Python, Go, Rust, or Java agents | REST protocol |
+| Any MCP-capable remote client | Authenticated Streamable HTTP MCP |
+
+Generate all connection values without guessing:
+
+```bash
+relaymesh connect \
+  --mission <mission-id> \
+  --agent <agent-id> \
+  --model <model-name> \
+  --role builder \
+  --capabilities general
+```
+
+The command does not print or store the agent key. Insert the key returned once
+by `relaymesh agent:create`; treat it as a password.
+
+For a ChatGPT client that cannot send a custom API key, create a scoped,
+revocable connection URL:
+
+```bash
+relaymesh connect:create \
+  --mission <mission-id> \
+  --agent <agent-id> \
+  --model chatgpt \
+  --role reviewer \
+  --capabilities general \
+  --ttl-hours 24
+```
+
+Enter the returned HTTPS `mcpUrl` in ChatGPT's plugin settings. The URL is
+itself a restricted credential: it is bound to one mission, agent, model, role,
+capability set, and expiry. Revoke it at any time with
+`relaymesh connect:revoke --connection <connection-id>`.
+
+### Local MCP bridge
 
 RelayMesh ships an MCP server so an existing AI client can join a mission
 without learning a proprietary API.
@@ -126,12 +171,68 @@ The bridge exposes:
 - `relay_acknowledge`
 - `relay_publish_artifact`
 
-It also exposes the `relaymesh_agent_protocol` prompt, which teaches a model the
-cooperation and recovery rules.
+It also exposes the `relaymesh_agent_protocol` prompt and initialization
+instructions, which teach every model the same cooperation and recovery rules.
+
+### Remote MCP for OpenAI and other hosted clients
+
+The runtime exposes MCP Streamable HTTP at:
+
+```text
+http://127.0.0.1:4317/mcp/<mission-id>/<agent-id>?model=<model>&role=<role>&capabilities=general
+```
+
+Use the agent key as the Bearer token. The connection is stateful, renews the
+RelayMesh session automatically, validates the key on every request, and
+supports all nine tools exposed by the stdio bridge.
+
+OpenAI Responses API example:
+
+```ts
+const response = await openai.responses.create({
+  model: process.env.OPENAI_MODEL!,
+  tools: [{
+    type: "mcp",
+    server_label: "relaymesh",
+    server_url: process.env.RELAYMESH_MCP_URL!,
+    authorization: process.env.RELAYMESH_AGENT_KEY!,
+    require_approval: "never",
+  }],
+  input: "Join the mission, read your inbox, and continue the next task.",
+});
+```
+
+Hosted clients require an HTTPS URL. Keep RelayMesh behind a trusted private
+tunnel or hardened reverse proxy. Scoped connection URLs make personal ChatGPT
+connections work without custom headers. Public multi-user plugin publication
+still requires standards-compliant OAuth and per-user authorization.
+
+### DeepSeek and OpenAI-compatible models
+
+RelayMesh publishes strict function definitions at
+`/.well-known/relaymesh-tools.json` and exports both
+`relayFunctionTools` and `executeRelayFunction` from the TypeScript SDK.
+
+The included worker connects DeepSeek, OpenAI-compatible gateways, and local
+function-calling models without a provider SDK:
+
+```bash
+MODEL_API_BASE=https://api.deepseek.com \
+MODEL_API_KEY="$DEEPSEEK_API_KEY" \
+MODEL_NAME=<deepseek-model> \
+RELAYMESH_MISSION_ID=<mission-id> \
+RELAYMESH_AGENT_ID=<agent-id> \
+RELAYMESH_AGENT_KEY=<agent-key> \
+relaymesh worker:openai
+```
+
+Change only `MODEL_API_BASE` and `MODEL_NAME` to use another compatible
+provider. The model still receives the same RelayMesh coordination tools.
 
 Runtime capabilities and transport metadata are discoverable at
-`/.well-known/relaymesh.json`. RelayMesh does not advertise an A2A Agent Card
-until its planned A2A transport is implemented.
+`/.well-known/relaymesh.json`; OpenAI-compatible tool schemas are discoverable
+at `/.well-known/relaymesh-tools.json`. RelayMesh does not advertise an A2A
+Agent Card until its planned A2A transport is implemented.
 
 ### TypeScript SDK
 
@@ -256,6 +357,10 @@ The compose file binds RelayMesh to localhost and persists `/app/data`.
 | `relaymesh start` | Start an installed production runtime |
 | `relaymesh demo` | Seed a demo and start an installed runtime |
 | `relaymesh-mcp` | Connect an installed AI client over MCP |
+| `relaymesh connect ...` | Generate provider-specific connection settings |
+| `relaymesh connect:create ...` | Create a scoped ChatGPT/remote MCP URL |
+| `relaymesh connect:revoke ...` | Revoke a scoped connection immediately |
+| `relaymesh worker:openai` | Run a DeepSeek/OpenAI-compatible model worker |
 | `npm run dev` | Run API and dashboard with live reload |
 | `npm run build` | Produce the production server and web bundle |
 | `npm start` | Start the production runtime |
@@ -277,7 +382,7 @@ Environment options are documented in [.env.example](.env.example).
 - Signs a separate hash chain for every mission.
 - Never executes shell commands or fetches arbitrary URLs.
 
-Version `0.1` is intentionally single-node. Do not expose it directly to the
+Version `0.2` is intentionally single-node. Do not expose it directly to the
 public internet. Read [SECURITY.md](SECURITY.md) and the
 [threat model](docs/THREAT_MODEL.md) before remote deployment.
 
@@ -290,6 +395,9 @@ Ready now:
 - TypeScript SDK;
 - CLI;
 - MCP bridge;
+- local stdio and remote Streamable HTTP MCP transports;
+- strict function tools for DeepSeek and OpenAI-compatible models;
+- provider-specific connection generator;
 - capability scheduling;
 - dependency-aware tasks;
 - leases, fencing, checkpoints, inbox, artifacts, and automatic recovery;

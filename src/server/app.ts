@@ -18,6 +18,7 @@ import {
   completeTaskSchema,
   createAgentSchema,
   createArtifactSchema,
+  createConnectionTicketSchema,
   createMissionSchema,
   createTaskSchema,
   failTaskSchema,
@@ -26,6 +27,7 @@ import {
   updateMissionSchema,
 } from "../core/schemas.js";
 import type { SessionClaims } from "../core/crypto.js";
+import { relayFunctionTools } from "../sdk/tools.js";
 import type { RelayConfig } from "./config.js";
 
 declare module "fastify" {
@@ -144,7 +146,7 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
   app.get("/health", async () => ({
     status: "ok",
     service: "relaymesh",
-    version: "0.1.0",
+    version: "0.2.0",
     time: new Date().toISOString(),
   }));
 
@@ -155,7 +157,7 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
         name: "RelayMesh coordination runtime",
         description:
           "Durable missions, task leases, checkpoints, messages, artifacts, and crash recovery for heterogeneous AI agents.",
-        version: "0.1.0",
+        version: "0.2.0",
         protocol: "relaymesh/1",
         documentationUrl: "https://github.com/Rayha33/relaymesh",
         transports: {
@@ -168,8 +170,22 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
             ],
           },
           mcp: {
-            type: "stdio",
-            command: "relaymesh-mcp",
+            transports: [
+              {
+                type: "stdio",
+                command: "relaymesh-mcp",
+              },
+              {
+                type: "streamable-http",
+                pathTemplate: "/mcp/{missionId}/{agentId}",
+                authentication: "agent-key-bearer",
+              },
+              {
+                type: "streamable-http",
+                pathTemplate: "/mcp/connect/{scopedTicket}",
+                authentication: "scoped-revocable-url",
+              },
+            ],
           },
         },
         primitives: [
@@ -185,6 +201,23 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
           "recovery",
         ],
       }),
+  );
+  app.get(
+    "/.well-known/relaymesh-tools.json",
+    async (_request, reply) =>
+      reply
+        .header("cache-control", "public, max-age=300")
+        .send({
+          name: "RelayMesh OpenAI-compatible function tools",
+          protocol: "relaymesh/1",
+          instructions: [
+            "Call relay_status and relay_inbox when starting or reconnecting.",
+            "Claim work before acting and checkpoint meaningful progress.",
+            "Use durable typed messages to cooperate with other model sessions.",
+            "Complete or fail work with the current lease and fencing token.",
+          ],
+          tools: relayFunctionTools,
+        }),
   );
 
   const requireAdmin = async (
@@ -240,6 +273,30 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
     "/api/v1/agents/:agentId/revoke",
     { onRequest: requireAdmin },
     async (request) => runtime.revokeAgent(request.params.agentId),
+  );
+  app.get(
+    "/api/v1/connections",
+    { onRequest: requireAdmin },
+    async () => runtime.listConnectionTickets(),
+  );
+  app.post<{ Params: { missionId: string } }>(
+    "/api/v1/missions/:missionId/connections",
+    { onRequest: requireAdmin },
+    async (request, reply) =>
+      reply
+        .status(201)
+        .send(
+          runtime.createConnectionTicket(
+            request.params.missionId,
+            parse(createConnectionTicketSchema, request.body),
+          ),
+        ),
+  );
+  app.post<{ Params: { connectionId: string } }>(
+    "/api/v1/connections/:connectionId/revoke",
+    { onRequest: requireAdmin },
+    async (request) =>
+      runtime.revokeConnectionTicket(request.params.connectionId),
   );
 
   app.get(
@@ -461,6 +518,9 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
         .send(result.content);
     },
   );
+
+  const { registerRelayMcpHttp } = await import("../mcp/http.js");
+  await registerRelayMcpHttp(app, runtime);
 
   const installedWebRoot = resolve(
     dirname(fileURLToPath(import.meta.url)),

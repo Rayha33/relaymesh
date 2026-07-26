@@ -1,7 +1,29 @@
 # RelayMesh coordination protocol v1
 
-The HTTP API is the reference protocol. The TypeScript SDK and MCP bridge are
-adapters over the same operations.
+The HTTP API is the reference protocol. The TypeScript SDK, local stdio MCP,
+remote Streamable HTTP MCP, and OpenAI-compatible function tools are adapters
+over the same operations.
+
+## Transport adapters
+
+- Local MCP: `relaymesh-mcp` over stdio.
+- Remote MCP:
+  `/mcp/:missionId/:agentId?model=...&role=...&capabilities=...` over
+  Streamable HTTP, with the agent key as a Bearer token.
+- Scoped remote MCP:
+  `/mcp/connect/:ticket` for clients that cannot send custom credentials. The
+  ticket is hashed at rest, restricted to one mission/agent/model/role/
+  capability set, expires within 30 days, and is independently revocable.
+- OpenAI-compatible functions:
+  `GET /.well-known/relaymesh-tools.json`.
+- Native REST: `/api/v1`.
+
+The remote MCP transport maintains its own MCP session ID while joining one
+durable RelayMesh agent session. Credentials are revalidated on every request.
+Closing an MCP transport stops its heartbeat; normal recovery then marks the
+RelayMesh session lost and requeues leased work with the latest checkpoint.
+Reconnecting through the same endpoint automatically identifies the prior
+RelayMesh session as the recovery source.
 
 ## Authentication
 

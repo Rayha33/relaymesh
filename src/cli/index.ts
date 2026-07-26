@@ -22,6 +22,8 @@ if (command === "start") {
   await import("../server/index.js");
 } else if (command === "demo:seed") {
   await import("../scripts/seed-demo.js");
+} else if (command === "worker:openai") {
+  await import("../../examples/openai-compatible-worker.js");
 } else {
   await runAdminCommand();
 }
@@ -37,6 +39,10 @@ async function runAdminCommand(): Promise<void> {
 
   if (command === "help" || command === "--help" || command === "-h") {
     printHelp();
+    return;
+  }
+  if (command === "connect") {
+    printConnectionGuide();
     return;
   }
 
@@ -69,6 +75,45 @@ async function runAdminCommand(): Promise<void> {
       }
       case "agent:list": {
         print(await admin.listAgents());
+        break;
+      }
+      case "connect:create": {
+        const created = await admin.createConnectionTicket(
+          required("--mission"),
+          {
+            agentId: required("--agent"),
+            model: required("--model"),
+            role: option("--role") ?? "worker",
+            capabilities: defaultCapabilities(
+              csv(option("--capabilities")),
+            ),
+            expiresInHours: Number.parseInt(
+              option("--ttl-hours") ?? "24",
+              10,
+            ),
+          },
+        );
+        print({
+          connection: created.connection,
+          mcpUrl: new URL(
+            `/mcp/connect/${encodeURIComponent(created.ticket)}`,
+            baseUrl,
+          ).href,
+          warning:
+            "This URL is a scoped credential. Do not commit, share, or log it.",
+        });
+        break;
+      }
+      case "connect:list": {
+        print(await admin.listConnectionTickets());
+        break;
+      }
+      case "connect:revoke": {
+        print(
+          await admin.revokeConnectionTicket(
+            required("--connection"),
+          ),
+        );
         break;
       }
       case "mission:create": {
@@ -119,6 +164,67 @@ async function runAdminCommand(): Promise<void> {
   }
 }
 
+function printConnectionGuide(): void {
+  const missionId = required("--mission");
+  const agentId = required("--agent");
+  const model = option("--model") ?? "any-model";
+  const role = option("--role") ?? "worker";
+  const capabilities = csv(option("--capabilities"));
+  const effectiveCapabilities =
+    capabilities.length > 0 ? capabilities : ["general"];
+  const remoteUrl = new URL(`/mcp/${missionId}/${agentId}`, baseUrl);
+  remoteUrl.searchParams.set("model", model);
+  remoteUrl.searchParams.set("role", role);
+  remoteUrl.searchParams.set(
+    "capabilities",
+    effectiveCapabilities.join(","),
+  );
+
+  print({
+    protocol: "relaymesh/1",
+    note: "Replace <agent-key> with the key returned by agent:create. Treat it as a secret.",
+    stdioMcp: {
+      useWith: ["Claude Desktop", "Claude Code", "Codex", "local MCP clients"],
+      command: "relaymesh-mcp",
+      env: {
+        RELAYMESH_URL: baseUrl,
+        RELAYMESH_MISSION_ID: missionId,
+        RELAYMESH_AGENT_ID: agentId,
+        RELAYMESH_AGENT_KEY: "<agent-key>",
+        RELAYMESH_MODEL: model,
+        RELAYMESH_ROLE: role,
+        RELAYMESH_CAPABILITIES: effectiveCapabilities.join(","),
+      },
+    },
+    remoteMcp: {
+      useWith: [
+        "OpenAI Responses API",
+        "remote MCP clients",
+        "HTTPS-forwarded private deployments",
+      ],
+      url: remoteUrl.href,
+      authorization: "Bearer <agent-key>",
+      transport: "streamable-http",
+    },
+    openAiCompatibleFunctions: {
+      useWith: [
+        "DeepSeek",
+        "OpenAI-compatible APIs",
+        "local function-calling models",
+      ],
+      manifestUrl: new URL(
+        "/.well-known/relaymesh-tools.json",
+        baseUrl,
+      ).href,
+      sdkExports: [
+        "relayFunctionTools",
+        "executeRelayFunction",
+      ],
+      runnableCommand: "relaymesh worker:openai",
+    },
+  });
+}
+
 function option(name: string): string | null {
   const index = args.indexOf(name);
   if (index === -1) {
@@ -142,6 +248,10 @@ function csv(value: string | null): string[] {
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean);
+}
+
+function defaultCapabilities(values: string[]): string[] {
+  return values.length > 0 ? values : ["general"];
 }
 
 function readToken(path: string): string | null {
@@ -175,7 +285,14 @@ Commands:
   start
   demo
   demo:seed
+  worker:openai
   token
+  connect --mission ID --agent ID [--model MODEL] [--role ROLE]
+          [--capabilities a,b]
+  connect:create --mission ID --agent ID --model MODEL
+                 [--role ROLE] [--capabilities a,b] [--ttl-hours N]
+  connect:list
+  connect:revoke --connection ID
   status
   agent:create  --name NAME --provider PROVIDER --model MODEL
   agent:list
@@ -191,5 +308,9 @@ Commands:
 Global options:
   --url URL
   --token TOKEN
+
+OpenAI-compatible worker environment:
+  MODEL_API_BASE, MODEL_API_KEY, MODEL_NAME
+  RELAYMESH_MISSION_ID, RELAYMESH_AGENT_ID, RELAYMESH_AGENT_KEY
 `);
 }

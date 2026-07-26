@@ -24,6 +24,15 @@ reasonable remediation window before public disclosure.
 
 - Keep the default localhost bind unless a trusted private network or
   authenticated reverse proxy protects the server.
+- Treat remote MCP agent keys as passwords. Send them only as Bearer tokens
+  over HTTPS; never place them in URLs, logs, or committed client files.
+- Scoped connection URLs are credentials designed for clients that cannot send
+  custom headers. Give them short expiries, share them only with the intended
+  client, protect upstream access logs, and revoke them immediately after
+  suspected exposure.
+- The built-in remote MCP transport is intended for private and developer
+  connections. A multi-user public ChatGPT plugin must add standards-compliant
+  OAuth and per-user authorization before deployment.
 - Use a persistent, access-controlled data volume.
 - Never commit `data/`, `.env`, administrator tokens, agent keys, or MCP
   configuration containing real credentials.

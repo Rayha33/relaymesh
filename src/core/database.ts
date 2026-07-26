@@ -64,6 +64,22 @@ export class RelayDatabase {
       CREATE INDEX IF NOT EXISTS sessions_heartbeat_idx
         ON sessions(status, last_heartbeat_at);
 
+      CREATE TABLE IF NOT EXISTS connection_tickets (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL REFERENCES agents(id),
+        token_hash TEXT NOT NULL,
+        model TEXT NOT NULL,
+        role TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS connection_tickets_expiry_idx
+        ON connection_tickets(status, expires_at);
+
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,

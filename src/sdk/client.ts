@@ -8,6 +8,7 @@ import type {
   CompleteTaskInput,
   CreateAgentInput,
   CreateArtifactInput,
+  CreateConnectionTicketInput,
   CreateMissionInput,
   CreateTaskInput,
   FailTaskInput,
@@ -20,6 +21,7 @@ import type {
   Artifact,
   Checkpoint,
   ClaimResult,
+  ConnectionTicket,
   Mission,
   MissionSnapshot,
   RecoveryReport,
@@ -143,6 +145,35 @@ export class RelayAdminClient extends HttpClient {
   revokeAgent(agentId: string): Promise<Agent> {
     return this.request(
       `/api/v1/agents/${agentId}/revoke`,
+      { method: "POST" },
+      this.auth,
+    );
+  }
+
+  createConnectionTicket(
+    missionId: string,
+    input: CreateConnectionTicketInput,
+  ): Promise<{ connection: ConnectionTicket; ticket: string }> {
+    return this.request(
+      `/api/v1/missions/${missionId}/connections`,
+      { method: "POST", body: JSON.stringify(input) },
+      this.auth,
+    );
+  }
+
+  listConnectionTickets(): Promise<ConnectionTicket[]> {
+    return this.request(
+      "/api/v1/connections",
+      { method: "GET" },
+      this.auth,
+    );
+  }
+
+  revokeConnectionTicket(
+    connectionId: string,
+  ): Promise<ConnectionTicket> {
+    return this.request(
+      `/api/v1/connections/${connectionId}/revoke`,
       { method: "POST" },
       this.auth,
     );

@@ -38,6 +38,18 @@ export type TaskStatus = (typeof taskStatuses)[number];
 export type SessionStatus = (typeof sessionStatuses)[number];
 export type MessageIntent = (typeof messageIntents)[number];
 
+export interface ConnectionTicket {
+  id: string;
+  missionId: string;
+  agentId: string;
+  model: string;
+  role: string;
+  capabilities: string[];
+  status: "active" | "revoked";
+  expiresAt: string;
+  createdAt: string;
+}
+
 export interface Agent {
   id: string;
   name: string;

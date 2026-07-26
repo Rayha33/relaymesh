@@ -428,6 +428,58 @@ describe("RelayRuntime", () => {
     ).rejects.toMatchObject({ code: "SESSION_INACTIVE" });
   });
 
+  it("issues scoped connection tickets that expire and revoke independently", () => {
+    const { runtime, advance } = createContext();
+    const registration = runtime.createAgent({
+      name: "ChatGPT connection",
+      provider: "OpenAI",
+      defaultModel: "chatgpt",
+      description: "",
+    });
+    const mission = runtime.createMission({
+      title: "Scoped connection",
+      objective: "Avoid exposing the underlying agent key.",
+    });
+    const first = runtime.createConnectionTicket(mission.id, {
+      agentId: registration.agent.id,
+      model: "chatgpt",
+      role: "reviewer",
+      capabilities: ["general", "general"],
+      expiresInHours: 1,
+    });
+    const second = runtime.createConnectionTicket(mission.id, {
+      agentId: registration.agent.id,
+      model: "chatgpt",
+      role: "reviewer",
+      capabilities: ["general"],
+      expiresInHours: 2,
+    });
+
+    expect(first.ticket).not.toContain(registration.agentKey);
+    expect(
+      runtime.authenticateConnectionTicket(first.ticket),
+    ).toMatchObject({
+      id: first.connection.id,
+      missionId: mission.id,
+      capabilities: ["general"],
+    });
+    expect(runtime.listConnectionTickets()).toHaveLength(2);
+    expect(
+      runtime.revokeConnectionTicket(first.connection.id).status,
+    ).toBe("revoked");
+    expect(() =>
+      runtime.authenticateConnectionTicket(first.ticket),
+    ).toThrow(/invalid, expired, or revoked/i);
+    expect(
+      runtime.authenticateConnectionTicket(second.ticket).id,
+    ).toBe(second.connection.id);
+
+    advance(2 * 60 * 60 * 1_000 + 1);
+    expect(() =>
+      runtime.authenticateConnectionTicket(second.ticket),
+    ).toThrow(/invalid, expired, or revoked/i);
+  });
+
   it("renews leased work on heartbeat and safely requeues it when leaving", async () => {
     const { runtime, advance } = createContext();
     const mission = runtime.createMission({

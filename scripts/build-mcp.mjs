@@ -1,8 +1,11 @@
 import { build } from "esbuild";
 
 await build({
-  entryPoints: ["src/mcp/index.ts"],
-  outfile: "dist/server/src/mcp/index.js",
+  entryPoints: {
+    index: "src/mcp/index.ts",
+    http: "src/mcp/http.ts",
+  },
+  outdir: "dist/server/src/mcp",
   bundle: true,
   platform: "node",
   format: "esm",

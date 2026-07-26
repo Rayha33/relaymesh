@@ -22,6 +22,7 @@ import { EventStore } from "./event-store.js";
 import type {
   CheckpointInput,
   CompleteTaskInput,
+  CreateConnectionTicketInput,
   CreateAgentInput,
   CreateArtifactInput,
   CreateMissionInput,
@@ -36,6 +37,7 @@ import type {
   Artifact,
   Checkpoint,
   ClaimResult,
+  ConnectionTicket,
   Lease,
   Mission,
   MissionSnapshot,
@@ -58,6 +60,11 @@ export interface RelayRuntimeOptions {
 export interface AgentRegistration {
   agent: Agent;
   agentKey: string;
+}
+
+export interface ConnectionTicketRegistration {
+  connection: ConnectionTicket;
+  ticket: string;
 }
 
 export interface JoinedSession {
@@ -109,6 +116,19 @@ interface SessionRow {
   last_heartbeat_at: string;
   expires_at: string;
   recovery_from_session_id: string | null;
+}
+
+interface ConnectionTicketRow {
+  id: string;
+  mission_id: string;
+  agent_id: string;
+  token_hash: string;
+  model: string;
+  role: string;
+  capabilities_json: string;
+  status: ConnectionTicket["status"];
+  expires_at: string;
+  created_at: string;
 }
 
 interface TaskRow {
@@ -391,6 +411,144 @@ export class RelayRuntime {
       throw notFound("Agent", agentId);
     }
     return mapAgent(row);
+  }
+
+  createConnectionTicket(
+    missionId: string,
+    input: CreateConnectionTicketInput,
+  ): ConnectionTicketRegistration {
+    const mission = this.getMission(missionId);
+    if (mission.status !== "active") {
+      throw conflict("Connection tickets require an active mission");
+    }
+    const agent = this.getAgent(input.agentId);
+    if (agent.status !== "active") {
+      throw conflict("Connection tickets require an active agent");
+    }
+    const id = randomUUID();
+    const ticket = `${id}.${createSecret("rm_connect")}`;
+    const createdAt = this.timestamp();
+    const expiresAt = new Date(
+      this.now().getTime() + input.expiresInHours * 60 * 60 * 1_000,
+    ).toISOString();
+    const connection: ConnectionTicket = {
+      id,
+      missionId,
+      agentId: agent.id,
+      model: input.model,
+      role: input.role,
+      capabilities: [...new Set(input.capabilities)].sort(),
+      status: "active",
+      expiresAt,
+      createdAt,
+    };
+    this.database.transaction(() => {
+      this.database.raw
+        .prepare(
+          `INSERT INTO connection_tickets(
+            id, mission_id, agent_id, token_hash, model, role,
+            capabilities_json, status, expires_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+        )
+        .run(
+          connection.id,
+          connection.missionId,
+          connection.agentId,
+          hashSecret(ticket),
+          connection.model,
+          connection.role,
+          JSON.stringify(connection.capabilities),
+          connection.expiresAt,
+          connection.createdAt,
+        );
+      this.events.append({
+        missionId,
+        actorType: "admin",
+        actorId: "admin",
+        type: "connection.created",
+        payload: {
+          connectionId: id,
+          agentId: agent.id,
+          model: connection.model,
+          role: connection.role,
+          capabilities: connection.capabilities,
+          expiresAt,
+        },
+        createdAt,
+      });
+    });
+    return { connection, ticket };
+  }
+
+  listConnectionTickets(): ConnectionTicket[] {
+    const rows = this.database.raw
+      .prepare(
+        "SELECT * FROM connection_tickets ORDER BY created_at DESC",
+      )
+      .all() as unknown as ConnectionTicketRow[];
+    return rows.map(mapConnectionTicket);
+  }
+
+  authenticateConnectionTicket(ticket: string): ConnectionTicket {
+    const separator = ticket.indexOf(".");
+    const id = separator === -1 ? "" : ticket.slice(0, separator);
+    const row = this.database.raw
+      .prepare("SELECT * FROM connection_tickets WHERE id = ?")
+      .get(id) as unknown as ConnectionTicketRow | undefined;
+    if (
+      row === undefined ||
+      row.status !== "active" ||
+      new Date(row.expires_at).getTime() <= this.now().getTime() ||
+      !verifySecret(ticket, row.token_hash)
+    ) {
+      throw new RelayError(
+        401,
+        "INVALID_CONNECTION_TICKET",
+        "Connection ticket is invalid, expired, or revoked",
+      );
+    }
+    const agent = this.getAgent(row.agent_id);
+    if (agent.status !== "active") {
+      throw new RelayError(
+        401,
+        "INVALID_CONNECTION_TICKET",
+        "Connection ticket is invalid, expired, or revoked",
+      );
+    }
+    return mapConnectionTicket(row);
+  }
+
+  revokeConnectionTicket(ticketId: string): ConnectionTicket {
+    const row = this.database.raw
+      .prepare("SELECT * FROM connection_tickets WHERE id = ?")
+      .get(ticketId) as unknown as ConnectionTicketRow | undefined;
+    if (row === undefined) {
+      throw notFound("Connection ticket", ticketId);
+    }
+    const connection = mapConnectionTicket(row);
+    if (connection.status === "revoked") {
+      return connection;
+    }
+    const at = this.timestamp();
+    this.database.transaction(() => {
+      this.database.raw
+        .prepare(
+          "UPDATE connection_tickets SET status = 'revoked' WHERE id = ?",
+        )
+        .run(ticketId);
+      this.events.append({
+        missionId: connection.missionId,
+        actorType: "admin",
+        actorId: "admin",
+        type: "connection.revoked",
+        payload: {
+          connectionId: ticketId,
+          agentId: connection.agentId,
+        },
+        createdAt: at,
+      });
+    });
+    return { ...connection, status: "revoked" };
   }
 
   createMission(input: CreateMissionInput): Mission {
@@ -1969,6 +2127,20 @@ function mapAgent(row: AgentRow): Agent {
     defaultModel: row.default_model,
     description: row.description,
     status: row.status,
+    createdAt: row.created_at,
+  };
+}
+
+function mapConnectionTicket(row: ConnectionTicketRow): ConnectionTicket {
+  return {
+    id: row.id,
+    missionId: row.mission_id,
+    agentId: row.agent_id,
+    model: row.model,
+    role: row.role,
+    capabilities: parseJson<string[]>(row.capabilities_json, []),
+    status: row.status,
+    expiresAt: row.expires_at,
     createdAt: row.created_at,
   };
 }

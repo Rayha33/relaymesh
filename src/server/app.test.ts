@@ -170,5 +170,80 @@ describe("RelayMesh HTTP API", () => {
     expect(discovery.protocol).toBe("relaymesh/1");
     expect(discovery.primitives).toContain("checkpoints");
     expect(discovery.primitives).toContain("recovery");
+    const tools = (
+      await app.inject({
+        method: "GET",
+        url: "/.well-known/relaymesh-tools.json",
+      })
+    ).json<{ tools: Array<{ function: { strict: boolean } }> }>();
+    expect(tools.tools).toHaveLength(9);
+    expect(tools.tools.every((tool) => tool.function.strict)).toBe(true);
+  });
+
+  it("manages scoped remote MCP connection tickets without exposing stored secrets", async () => {
+    const { app } = await setup();
+    const headers = {
+      authorization: "Bearer integration-admin-token",
+    };
+    const registration = (
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/agents",
+        headers,
+        payload: {
+          name: "ChatGPT",
+          provider: "OpenAI",
+          defaultModel: "chatgpt",
+          description: "",
+        },
+      })
+    ).json<{ agent: { id: string }; agentKey: string }>();
+    const mission = (
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/missions",
+        headers,
+        payload: {
+          title: "Scoped MCP",
+          objective: "Connect a client without custom headers.",
+        },
+      })
+    ).json<{ id: string }>();
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/v1/missions/${mission.id}/connections`,
+      headers,
+      payload: {
+        agentId: registration.agent.id,
+        model: "chatgpt",
+        role: "reviewer",
+        capabilities: ["general"],
+        expiresInHours: 1,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const issued = created.json<{
+      connection: { id: string; status: string };
+      ticket: string;
+    }>();
+    expect(issued.ticket).not.toContain(registration.agentKey);
+
+    const listed = (
+      await app.inject({
+        method: "GET",
+        url: "/api/v1/connections",
+        headers,
+      })
+    ).json<Array<Record<string, unknown>>>();
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).not.toHaveProperty("ticket");
+    expect(listed[0]).not.toHaveProperty("token_hash");
+
+    const revoked = await app.inject({
+      method: "POST",
+      url: `/api/v1/connections/${issued.connection.id}/revoke`,
+      headers,
+    });
+    expect(revoked.json<{ status: string }>().status).toBe("revoked");
   });
 });

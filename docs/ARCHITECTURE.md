@@ -25,8 +25,8 @@ switches, context loss, process crashes, and uncooperative peers.
 ## Components
 
 ```text
-Claude / Codex / Gemini / custom agents
-          | REST SDK / MCP tools
+Claude / ChatGPT / DeepSeek / Codex / local models
+          | REST · stdio MCP · HTTP MCP · function tools
           v
  +-----------------------+
  | RelayMesh gateway     |
@@ -126,3 +126,11 @@ SQLite runs in WAL mode with foreign keys and a busy timeout. The single-node
 runtime is intentionally operational without external infrastructure. The
 protocol and service boundary permit replacing SQLite with PostgreSQL or a
 distributed log later without changing agent clients.
+
+## Provider boundary
+
+RelayMesh never calls a provider-specific API in its coordination core. Model
+and client adapters translate into the same nine operations. This keeps durable
+state independent from model names, vendors, context-window formats, and
+provider session IDs. A provider can disappear or change its API without
+invalidating stored missions or checkpoints.
