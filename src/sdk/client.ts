@@ -12,8 +12,10 @@ import type {
   CreateMissionInput,
   CreateTaskInput,
   FailTaskInput,
+  HandoffTaskInput,
   JoinSessionInput,
   SendMessageInput,
+  SyncSessionInput,
 } from "../core/schemas.js";
 import type {
   Agent,
@@ -22,10 +24,12 @@ import type {
   Checkpoint,
   ClaimResult,
   ConnectionTicket,
+  HandoffResult,
   Mission,
   MissionSnapshot,
   RecoveryReport,
   RelayMessage,
+  RelaySyncEnvelope,
   Task,
 } from "../core/types.js";
 
@@ -294,6 +298,18 @@ export class RelaySessionClient extends HttpClient {
     );
   }
 
+  sync(
+    input: Partial<SyncSessionInput> = {},
+    options: RelayMutationOptions = {},
+  ): Promise<RelaySyncEnvelope> {
+    return this.request(
+      `/api/v1/sessions/${this.identity.id}/sync`,
+      { method: "POST", body: JSON.stringify(input) },
+      this.auth,
+      mutationKey(options),
+    );
+  }
+
   claim(options: RelayMutationOptions = {}): Promise<ClaimResult | null> {
     return this.request(
       `/api/v1/missions/${this.identity.missionId}/tasks/claim`,
@@ -336,6 +352,19 @@ export class RelaySessionClient extends HttpClient {
   ): Promise<Task> {
     return this.request(
       `/api/v1/tasks/${taskId}/fail`,
+      { method: "POST", body: JSON.stringify(input) },
+      this.auth,
+      mutationKey(options),
+    );
+  }
+
+  handoff(
+    taskId: string,
+    input: HandoffTaskInput,
+    options: RelayMutationOptions = {},
+  ): Promise<HandoffResult> {
+    return this.request(
+      `/api/v1/tasks/${taskId}/handoff`,
       { method: "POST", body: JSON.stringify(input) },
       this.auth,
       mutationKey(options),

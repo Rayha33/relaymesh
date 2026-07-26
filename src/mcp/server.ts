@@ -9,13 +9,17 @@ import type {
   CompleteTaskInput,
   CreateArtifactInput,
   FailTaskInput,
+  HandoffTaskInput,
   SendMessageInput,
+  SyncSessionInput,
 } from "../core/schemas.js";
 import type {
   Artifact,
   Checkpoint,
   ClaimResult,
+  HandoffResult,
   RelayMessage,
+  RelaySyncEnvelope,
   Task,
 } from "../core/types.js";
 import { RelayApiError } from "../sdk/client.js";
@@ -24,11 +28,13 @@ const outputSchema = { data: z.unknown() };
 const closedWorld = { openWorldHint: false };
 
 export interface RelayMcpSession {
+  sync(input: SyncSessionInput): Promise<RelaySyncEnvelope>;
   heartbeat(): Promise<HeartbeatResult>;
   claim(): Promise<ClaimResult | null>;
   checkpoint(taskId: string, input: CheckpointInput): Promise<Checkpoint>;
   complete(taskId: string, input: CompleteTaskInput): Promise<Task>;
   fail(taskId: string, input: FailTaskInput): Promise<Task>;
+  handoff(taskId: string, input: HandoffTaskInput): Promise<HandoffResult>;
   sendMessage(input: SendMessageInput): Promise<RelayMessage>;
   inbox(includeAcknowledged?: boolean): Promise<RelayMessage[]>;
   acknowledge(messageId: string): Promise<RelayMessage>;
@@ -42,18 +48,38 @@ export function createRelayMcpServer(
   const server = new McpServer(
     {
       name: "relaymesh",
-      version: "0.2.0",
+      version: "0.3.0",
     },
     {
       instructions: [
         "RelayMesh is the canonical coordination state for this mission.",
-        "Start with relay_status and relay_inbox, then claim only work returned by relay_claim_task.",
+        "Start and reconnect with relay_sync; it renews the session, reads the inbox, and safely resumes or claims work in one call.",
         "Checkpoint after meaningful progress and before external side effects.",
         "Use typed messages for requests, challenges, decisions, handoffs, and blockers.",
-        "Complete or fail leased work with the exact lease ID and fencing token.",
+        "Complete, fail, or hand off leased work with the exact lease ID and fencing token.",
         "Never reuse a stale lease after a crash or reconnect.",
       ].join(" "),
     },
+  );
+
+  server.registerTool(
+    "relay_sync",
+    {
+      title: "Synchronize this model with durable mission state",
+      description:
+        "Always call first and after reconnecting. Atomically renews this session, returns peers and inbox messages, and resumes or claims exactly one compatible task as a provider-neutral context envelope.",
+      inputSchema: {
+        autoClaim: z.boolean().default(true),
+        includeAcknowledged: z.boolean().default(false),
+      },
+      outputSchema,
+      annotations: {
+        ...closedWorld,
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
+    },
+    async (input) => safeResult(async () => session.sync(input)),
   );
 
   server.registerTool(
@@ -61,7 +87,7 @@ export function createRelayMcpServer(
     {
       title: "Read mission status and renew this session",
       description:
-        "Call first and periodically. Renews the current agent session and returns its durable mission identity and unread-message count.",
+        "Renews the current agent session and returns its durable mission identity and unread-message count. Use relay_sync at startup.",
       outputSchema,
       annotations: {
         ...closedWorld,
@@ -206,6 +232,67 @@ export function createRelayMcpServer(
   );
 
   server.registerTool(
+    "relay_handoff",
+    {
+      title: "Atomically hand work to another model role",
+      description:
+        "Checkpoint progress, release the active lease, preserve the attempt budget, retarget the task, and send a durable handoff message as one atomic operation.",
+      inputSchema: {
+        taskId: z.string().uuid(),
+        leaseId: z.string().uuid(),
+        fencingToken: z.number().int().positive(),
+        summary: z.string().min(1),
+        nextAction: z.string().min(1),
+        decisionsJson: z
+          .string()
+          .default("[]")
+          .describe("JSON array of {decision, rationale?} objects"),
+        artifactIds: z.array(z.string().uuid()).default([]),
+        opaqueStateJson: z.string().default("{}"),
+        targetRole: z.string().min(1),
+        subject: z.string().min(1).default("Task handoff"),
+        content: z.string().min(1),
+        priority: z.number().int().min(-100).max(100).default(10),
+      },
+      outputSchema,
+      annotations: {
+        ...closedWorld,
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
+    },
+    async ({
+      taskId,
+      leaseId,
+      fencingToken,
+      summary,
+      nextAction,
+      decisionsJson,
+      artifactIds,
+      opaqueStateJson,
+      targetRole,
+      subject,
+      content,
+      priority,
+    }) =>
+      safeResult(async () =>
+        session.handoff(taskId, {
+          leaseId,
+          fencingToken,
+          summary,
+          nextAction,
+          decisions: parseJson(decisionsJson, []),
+          artifactIds,
+          opaqueState: parseJson(opaqueStateJson, {}),
+          targetRole,
+          subject,
+          content,
+          priority,
+        }),
+      ),
+  );
+
+  server.registerTool(
     "relay_send_message",
     {
       title: "Send a durable message to other agents",
@@ -325,14 +412,15 @@ export function createRelayMcpServer(
             type: "text",
             text: [
               "You are participating in a RelayMesh mission.",
-              "1. Call relay_status when starting or reconnecting.",
-              "2. Read and acknowledge relevant inbox messages.",
-              "3. Claim only a task returned by relay_claim_task.",
+              "1. Call relay_sync when starting or reconnecting.",
+              "2. Follow the returned envelope; it includes inbox state and at most one owned task.",
+              "3. Claim directly only when relay_sync was called with autoClaim disabled.",
               "4. Checkpoint after each meaningful decision and before external side effects.",
               "5. Treat checkpoints and artifacts as canonical; do not rely on hidden chat context.",
               "6. Send typed messages when requesting help, challenging a claim, handing off, or reporting a blocker.",
-              "7. Complete or fail every leased task with its exact lease ID and fencing token.",
-              "8. Never reuse a stale lease after a crash or recovery.",
+              "7. Complete, fail, or hand off every leased task with its exact lease ID and fencing token.",
+              "8. Use relay_handoff when another model or role should continue; never simulate a handoff with chat text alone.",
+              "9. Never reuse a stale lease after a crash or recovery.",
             ].join("\n"),
           },
         },

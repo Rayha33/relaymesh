@@ -22,8 +22,10 @@ import {
   createMissionSchema,
   createTaskSchema,
   failTaskSchema,
+  handoffTaskSchema,
   joinSessionSchema,
   sendMessageSchema,
+  syncSessionSchema,
   updateMissionSchema,
 } from "../core/schemas.js";
 import type { SessionClaims } from "../core/crypto.js";
@@ -86,6 +88,8 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
     },
     allowedHeaders: [
       "authorization",
+      "a2a-extensions",
+      "a2a-version",
       "content-type",
       "idempotency-key",
       "x-agent-id",
@@ -146,7 +150,7 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
   app.get("/health", async () => ({
     status: "ok",
     service: "relaymesh",
-    version: "0.2.0",
+    version: "0.3.0",
     time: new Date().toISOString(),
   }));
 
@@ -157,8 +161,8 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
         name: "RelayMesh coordination runtime",
         description:
           "Durable missions, task leases, checkpoints, messages, artifacts, and crash recovery for heterogeneous AI agents.",
-        version: "0.2.0",
-        protocol: "relaymesh/1",
+        version: "0.3.0",
+        protocol: "relaymesh/2",
         documentationUrl: "https://github.com/Rayha33/relaymesh",
         transports: {
           rest: {
@@ -187,8 +191,16 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
               },
             ],
           },
+          a2a: {
+            agentCardPath: "/.well-known/agent-card.json",
+            basePath: "/a2a/v1",
+            protocolBinding: "HTTP+JSON",
+            protocolVersion: "1.0",
+            authentication: "scoped-ticket-bearer",
+          },
         },
         primitives: [
+          "sync-envelopes",
           "missions",
           "sessions",
           "tasks",
@@ -199,6 +211,7 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
           "artifacts",
           "signed-events",
           "recovery",
+          "atomic-handoff",
         ],
       }),
   );
@@ -209,11 +222,12 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
         .header("cache-control", "public, max-age=300")
         .send({
           name: "RelayMesh OpenAI-compatible function tools",
-          protocol: "relaymesh/1",
+          protocol: "relaymesh/2",
           instructions: [
-            "Call relay_status and relay_inbox when starting or reconnecting.",
+            "Call relay_sync first when starting or reconnecting.",
             "Claim work before acting and checkpoint meaningful progress.",
             "Use durable typed messages to cooperate with other model sessions.",
+            "Use relay_handoff to atomically checkpoint and transfer unfinished work.",
             "Complete or fail work with the current lease and fencing token.",
           ],
           tools: relayFunctionTools,
@@ -381,6 +395,19 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
     },
   );
   app.post<{ Params: { sessionId: string } }>(
+    "/api/v1/sessions/:sessionId/sync",
+    { onRequest: requireSession },
+    async (request) => {
+      const claims = sessionClaims(request);
+      assertPathSession(claims, request.params.sessionId);
+      return runtime.syncSession(
+        claims,
+        parse(syncSessionSchema, request.body ?? {}),
+        idempotencyKey(request),
+      );
+    },
+  );
+  app.post<{ Params: { sessionId: string } }>(
     "/api/v1/sessions/:sessionId/leave",
     { onRequest: requireSession },
     async (request) => {
@@ -433,6 +460,17 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
         sessionClaims(request),
         request.params.taskId,
         parse(failTaskSchema, request.body),
+        idempotencyKey(request),
+      ),
+  );
+  app.post<{ Params: { taskId: string } }>(
+    "/api/v1/tasks/:taskId/handoff",
+    { onRequest: requireSession },
+    async (request) =>
+      runtime.handoffTask(
+        sessionClaims(request),
+        request.params.taskId,
+        parse(handoffTaskSchema, request.body),
         idempotencyKey(request),
       ),
   );
@@ -521,6 +559,8 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
 
   const { registerRelayMcpHttp } = await import("../mcp/http.js");
   await registerRelayMcpHttp(app, runtime);
+  const { registerRelayA2a } = await import("../a2a/index.js");
+  await registerRelayA2a(app, runtime, config.publicUrl);
 
   const installedWebRoot = resolve(
     dirname(fileURLToPath(import.meta.url)),

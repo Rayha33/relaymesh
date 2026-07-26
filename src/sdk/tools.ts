@@ -22,6 +22,23 @@ const emptyParameters: JsonSchema = {
 
 export const relayFunctionTools: RelayFunctionTool[] = [
   tool(
+    "relay_sync",
+    "Always call first and after reconnecting. Renew the session, read peers and inbox state, and resume or claim exactly one compatible task as a provider-neutral context envelope.",
+    objectSchema(
+      {
+        autoClaim: {
+          type: "boolean",
+          description: "Claim compatible work when this session owns no task",
+        },
+        includeAcknowledged: {
+          type: "boolean",
+          description: "Include messages already acknowledged by this session",
+        },
+      },
+      ["autoClaim", "includeAcknowledged"],
+    ),
+  ),
+  tool(
     "relay_status",
     "Renew this agent session and return its durable identity plus unread-message count. Call first and periodically.",
     emptyParameters,
@@ -89,6 +106,48 @@ export const relayFunctionTools: RelayFunctionTool[] = [
         },
       },
       ["taskId", "leaseId", "fencingToken", "reason", "retryable"],
+    ),
+  ),
+  tool(
+    "relay_handoff",
+    "Atomically checkpoint progress, release ownership, preserve the attempt budget, retarget the task, and notify the successor role.",
+    objectSchema(
+      {
+        taskId: stringSchema("Task UUID"),
+        leaseId: stringSchema("Active lease UUID"),
+        fencingToken: integerSchema("Active fencing token"),
+        summary: stringSchema("Durable progress summary"),
+        nextAction: stringSchema("Exact next action for the successor"),
+        decisionsJson: stringSchema(
+          "JSON array of {decision, rationale?} objects",
+        ),
+        artifactIds: arraySchema("Artifact UUIDs used by the handoff"),
+        opaqueStateJson: stringSchema(
+          "JSON object containing optional provider-specific state",
+        ),
+        targetRole: stringSchema("Role allowed to claim the handed-off task"),
+        subject: stringSchema("Handoff message subject"),
+        content: stringSchema("Self-contained handoff instructions"),
+        priority: {
+          type: "integer",
+          minimum: -100,
+          maximum: 100,
+        },
+      },
+      [
+        "taskId",
+        "leaseId",
+        "fencingToken",
+        "summary",
+        "nextAction",
+        "decisionsJson",
+        "artifactIds",
+        "opaqueStateJson",
+        "targetRole",
+        "subject",
+        "content",
+        "priority",
+      ],
     ),
   ),
   tool(
@@ -183,6 +242,10 @@ const checkpointArguments = z.object({
   artifactIds: z.array(z.string().uuid()),
   opaqueStateJson: z.string(),
 });
+const syncArguments = z.object({
+  autoClaim: z.boolean(),
+  includeAcknowledged: z.boolean(),
+});
 const completeArguments = z.object({
   taskId: z.string().uuid(),
   leaseId: z.string().uuid(),
@@ -195,6 +258,12 @@ const failArguments = z.object({
   fencingToken: z.number().int().positive(),
   reason: z.string().min(1),
   retryable: z.boolean(),
+});
+const handoffArguments = checkpointArguments.extend({
+  targetRole: z.string().min(1),
+  subject: z.string().min(1),
+  content: z.string().min(1),
+  priority: z.number().int().min(-100).max(100),
 });
 const messageArguments = z.object({
   toSessionId: z.string().uuid().nullable(),
@@ -232,6 +301,8 @@ export async function executeRelayFunction(
 ): Promise<unknown> {
   const args = rawArguments ?? {};
   switch (name) {
+    case "relay_sync":
+      return session.sync(syncArguments.parse(args));
     case "relay_status":
       return {
         session: session.identity,
@@ -266,6 +337,22 @@ export async function executeRelayFunction(
         fencingToken: input.fencingToken,
         reason: input.reason,
         retryable: input.retryable,
+      });
+    }
+    case "relay_handoff": {
+      const input = handoffArguments.parse(args);
+      return session.handoff(input.taskId, {
+        leaseId: input.leaseId,
+        fencingToken: input.fencingToken,
+        summary: input.summary,
+        nextAction: input.nextAction,
+        decisions: parseJson(input.decisionsJson, []),
+        artifactIds: input.artifactIds,
+        opaqueState: parseJson(input.opaqueStateJson, {}),
+        targetRole: input.targetRole,
+        subject: input.subject,
+        content: input.content,
+        priority: input.priority,
       });
     }
     case "relay_send_message":

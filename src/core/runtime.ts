@@ -28,8 +28,10 @@ import type {
   CreateMissionInput,
   CreateTaskInput,
   FailTaskInput,
+  HandoffTaskInput,
   JoinSessionInput,
   SendMessageInput,
+  SyncSessionInput,
 } from "./schemas.js";
 import type {
   Agent,
@@ -38,11 +40,13 @@ import type {
   Checkpoint,
   ClaimResult,
   ConnectionTicket,
+  HandoffResult,
   Lease,
   Mission,
   MissionSnapshot,
   RecoveryReport,
   RelayMessage,
+  RelaySyncEnvelope,
   SessionStatus,
   Task,
 } from "./types.js";
@@ -65,6 +69,12 @@ export interface AgentRegistration {
 export interface ConnectionTicketRegistration {
   connection: ConnectionTicket;
   ticket: string;
+}
+
+export interface ConnectionSession {
+  connection: ConnectionTicket;
+  session: AgentSession;
+  claims: SessionClaims;
 }
 
 export interface JoinedSession {
@@ -129,6 +139,7 @@ interface ConnectionTicketRow {
   status: ConnectionTicket["status"];
   expires_at: string;
   created_at: string;
+  last_session_id: string | null;
 }
 
 interface TaskRow {
@@ -441,6 +452,7 @@ export class RelayRuntime {
       status: "active",
       expiresAt,
       createdAt,
+      lastSessionId: null,
     };
     this.database.transaction(() => {
       this.database.raw
@@ -516,6 +528,103 @@ export class RelayRuntime {
       );
     }
     return mapConnectionTicket(row);
+  }
+
+  bindConnectionTicketSession(
+    connectionId: string,
+    sessionId: string,
+  ): ConnectionTicket {
+    const connection = this.listConnectionTickets().find(
+      (candidate) => candidate.id === connectionId,
+    );
+    if (connection === undefined) {
+      throw notFound("Connection ticket", connectionId);
+    }
+    const session = this.getSession(sessionId);
+    if (
+      session.missionId !== connection.missionId ||
+      session.agentId !== connection.agentId
+    ) {
+      throw forbidden(
+        "Connection tickets can only bind their own agent session",
+      );
+    }
+    this.database.raw
+      .prepare(
+        "UPDATE connection_tickets SET last_session_id = ? WHERE id = ?",
+      )
+      .run(sessionId, connectionId);
+    return { ...connection, lastSessionId: sessionId };
+  }
+
+  findRecoverySession(
+    missionId: string,
+    agentId: string,
+    preferredSessionId: string | null = null,
+  ): string | null {
+    this.recover();
+    if (preferredSessionId !== null) {
+      const preferred = this.getSession(preferredSessionId);
+      if (
+        preferred.missionId === missionId &&
+        preferred.agentId === agentId &&
+        ["lost", "left"].includes(preferred.status)
+      ) {
+        return preferred.id;
+      }
+    }
+    const row = this.database.raw
+      .prepare(
+        `SELECT id FROM sessions
+         WHERE mission_id = ? AND agent_id = ?
+           AND status IN ('lost', 'left')
+         ORDER BY joined_at DESC LIMIT 1`,
+      )
+      .get(missionId, agentId) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
+
+  async ensureConnectionSession(
+    rawTicket: string,
+  ): Promise<ConnectionSession> {
+    const connection = this.authenticateConnectionTicket(rawTicket);
+    this.recover();
+    if (connection.lastSessionId !== null) {
+      const existing = this.getSession(connection.lastSessionId);
+      if (existing.status === "active") {
+        return {
+          connection,
+          session: existing,
+          claims: this.getSessionClaims(existing.id),
+        };
+      }
+    }
+    const agent = this.getAgent(connection.agentId);
+    const recoveryFromSessionId = this.findRecoverySession(
+      connection.missionId,
+      connection.agentId,
+      connection.lastSessionId,
+    );
+    const joined = await this.joinSession(
+      connection.missionId,
+      agent,
+      {
+        model: connection.model,
+        role: connection.role,
+        capabilities: connection.capabilities,
+        recoveryFromSessionId,
+      },
+      randomUUID(),
+    );
+    const bound = this.bindConnectionTicketSession(
+      connection.id,
+      joined.session.id,
+    );
+    return {
+      connection: bound,
+      session: joined.session,
+      claims: await this.authenticateSession(joined.sessionToken),
+    };
   }
 
   revokeConnectionTicket(ticketId: string): ConnectionTicket {
@@ -954,6 +1063,106 @@ export class RelayRuntime {
     return result;
   }
 
+  syncSession(
+    claims: SessionClaims,
+    input: SyncSessionInput,
+    idempotencyKey?: string,
+  ): RelaySyncEnvelope {
+    const operation = "session.sync";
+    const cached = this.getIdempotent<RelaySyncEnvelope>(
+      claims.sessionId,
+      idempotencyKey,
+      operation,
+    );
+    if (cached.found) {
+      return cached.value;
+    }
+
+    const heartbeat = this.heartbeat(claims);
+    const mission = this.getMission(claims.missionId);
+    const session = this.getSession(claims.sessionId);
+    const work =
+      this.getActiveClaim(claims.sessionId) ??
+      (input.autoClaim && mission.status === "active"
+        ? this.claimTask(claims)
+        : null);
+    const snapshot = this.getMissionSnapshot(
+      claims.missionId,
+      claims.sessionId,
+    );
+    const inbox = this.listInbox(
+      claims,
+      input.includeAcknowledged,
+    );
+    const state: RelaySyncEnvelope["state"] = [
+      "completed",
+      "failed",
+      "cancelled",
+    ].includes(mission.status)
+      ? "mission_terminal"
+      : work === null
+        ? "waiting"
+        : "working";
+    const instructions =
+      state === "working"
+        ? [
+            `Work only on task ${work!.task.id}: ${work!.task.title}.`,
+            work!.checkpoint === null
+              ? "No prior checkpoint exists; start from the task description."
+              : `Resume from checkpoint ${work!.checkpoint.id}: ${work!.checkpoint.nextAction}`,
+            "Checkpoint durable progress and use the current lease ID and fencing token for every task mutation.",
+          ]
+        : state === "mission_terminal"
+          ? [`Mission is ${mission.status}; do not claim new work.`]
+          : [
+              "No compatible task is ready. Process the inbox, help unblock peers, then call relay_sync again.",
+            ];
+    if (inbox.some((message) => message.intent === "blocker")) {
+      instructions.unshift(
+        "A blocker is waiting in the durable inbox; address it before optional work.",
+      );
+    }
+
+    const envelope: RelaySyncEnvelope = {
+      protocol: "relaymesh/2",
+      generatedAt: this.timestamp(),
+      state,
+      mission,
+      session,
+      peers: snapshot.sessions
+        .filter((candidate) => candidate.id !== claims.sessionId)
+        .map((candidate) => ({
+          sessionId: candidate.id,
+          agentName: candidate.agentName,
+          provider: candidate.provider,
+          model: candidate.model,
+          role: candidate.role,
+          capabilities: candidate.capabilities,
+          status: candidate.status,
+          lastHeartbeatAt: candidate.lastHeartbeatAt,
+        })),
+      heartbeat: {
+        nextHeartbeatDueAt: heartbeat.nextHeartbeatDueAt,
+        renewedLeaseIds: heartbeat.renewedLeases.map(
+          (lease) => lease.leaseId,
+        ),
+      },
+      work,
+      inbox,
+      artifacts: snapshot.artifacts,
+      eventSequence: snapshot.eventSequence,
+      instructions,
+    };
+    this.saveIdempotent(
+      claims.sessionId,
+      idempotencyKey,
+      operation,
+      envelope,
+      200,
+    );
+    return envelope;
+  }
+
   claimTask(
     claims: SessionClaims,
     idempotencyKey?: string,
@@ -1176,6 +1385,159 @@ export class RelayRuntime {
     return checkpoint;
   }
 
+  handoffTask(
+    claims: SessionClaims,
+    taskId: string,
+    input: HandoffTaskInput,
+    idempotencyKey?: string,
+  ): HandoffResult {
+    const operation = `task.handoff:${taskId}`;
+    const cached = this.getIdempotent<HandoffResult>(
+      claims.sessionId,
+      idempotencyKey,
+      operation,
+    );
+    if (cached.found) {
+      return cached.value;
+    }
+
+    const task = this.getTask(taskId);
+    this.assertMissionScope(claims, task.missionId);
+    this.assertLease(
+      claims.sessionId,
+      taskId,
+      input.leaseId,
+      input.fencingToken,
+    );
+    this.validateArtifactReferences(task.missionId, input.artifactIds);
+    const at = this.timestamp();
+    const checkpoint: Checkpoint = {
+      id: randomUUID(),
+      taskId,
+      sessionId: claims.sessionId,
+      leaseId: input.leaseId,
+      summary: input.summary,
+      nextAction: input.nextAction,
+      decisions: input.decisions,
+      artifactIds: input.artifactIds,
+      opaqueState: input.opaqueState,
+      createdAt: at,
+    };
+    const message: RelayMessage = {
+      id: randomUUID(),
+      missionId: task.missionId,
+      senderSessionId: claims.sessionId,
+      toSessionId: null,
+      toRole: input.targetRole,
+      intent: "handoff",
+      subject: input.subject,
+      content: input.content,
+      priority: input.priority,
+      correlationId: null,
+      replyToId: null,
+      artifactIds: input.artifactIds,
+      createdAt: at,
+      acknowledgedAt: null,
+    };
+    const nextTask: Task = {
+      ...task,
+      status: "queued",
+      assignedRole: input.targetRole,
+      attempt: Math.max(0, task.attempt - 1),
+      updatedAt: at,
+    };
+
+    this.database.transaction(() => {
+      this.database.raw
+        .prepare(
+          `INSERT INTO checkpoints(
+            id, task_id, session_id, lease_id, summary, next_action,
+            decisions_json, artifacts_json, opaque_state_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          checkpoint.id,
+          checkpoint.taskId,
+          checkpoint.sessionId,
+          checkpoint.leaseId,
+          checkpoint.summary,
+          checkpoint.nextAction,
+          JSON.stringify(checkpoint.decisions),
+          JSON.stringify(checkpoint.artifactIds),
+          checkpoint.opaqueState === null
+            ? null
+            : JSON.stringify(checkpoint.opaqueState),
+          checkpoint.createdAt,
+        );
+      const released = this.database.raw
+        .prepare(
+          `UPDATE leases SET status = 'released', heartbeat_at = ?
+           WHERE id = ? AND status = 'active'`,
+        )
+        .run(at, input.leaseId);
+      if (released.changes !== 1) {
+        throw conflict("Lease became stale during handoff");
+      }
+      this.database.raw
+        .prepare(
+          `UPDATE tasks
+           SET status = 'queued', assigned_role = ?,
+               attempt = CASE WHEN attempt > 0 THEN attempt - 1 ELSE 0 END,
+               updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(input.targetRole, at, taskId);
+      this.database.raw
+        .prepare(
+          `INSERT INTO messages(
+            id, mission_id, sender_session_id, to_session_id, to_role, intent,
+            subject, content, priority, correlation_id, reply_to_id,
+            artifacts_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          message.id,
+          message.missionId,
+          message.senderSessionId,
+          message.toSessionId,
+          message.toRole,
+          message.intent,
+          message.subject,
+          message.content,
+          message.priority,
+          message.correlationId,
+          message.replyToId,
+          JSON.stringify(message.artifactIds),
+          message.createdAt,
+        );
+      this.touchMission(task.missionId, at);
+      this.events.append({
+        missionId: task.missionId,
+        actorType: "agent",
+        actorId: claims.sessionId,
+        type: "task.handed_off",
+        payload: {
+          taskId,
+          leaseId: input.leaseId,
+          fencingToken: input.fencingToken,
+          checkpointId: checkpoint.id,
+          messageId: message.id,
+          targetRole: input.targetRole,
+        },
+        createdAt: at,
+      });
+    });
+    const result = { checkpoint, task: nextTask, message };
+    this.saveIdempotent(
+      claims.sessionId,
+      idempotencyKey,
+      operation,
+      result,
+      200,
+    );
+    return result;
+  }
+
   getLatestCheckpoint(taskId: string): Checkpoint | null {
     const row = this.database.raw
       .prepare(
@@ -1318,6 +1680,92 @@ export class RelayRuntime {
     });
 
     const result = { ...task, status: nextStatus, updatedAt: at };
+    this.saveIdempotent(
+      claims.sessionId,
+      idempotencyKey,
+      operation,
+      result,
+      200,
+    );
+    return result;
+  }
+
+  cancelTask(
+    claims: SessionClaims,
+    taskId: string,
+    reason = "agent.cancelled",
+    idempotencyKey?: string,
+  ): Task {
+    const operation = `task.cancel:${taskId}`;
+    const cached = this.getIdempotent<Task>(
+      claims.sessionId,
+      idempotencyKey,
+      operation,
+    );
+    if (cached.found) {
+      return cached.value;
+    }
+    const root = this.getTask(taskId);
+    this.assertMissionScope(claims, root.missionId);
+    if (["completed", "failed", "cancelled"].includes(root.status)) {
+      throw conflict(`Task is already ${root.status}`);
+    }
+    const missionTasks = this.listTasks(root.missionId);
+    const cancelledIds = new Set([taskId]);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const task of missionTasks) {
+        if (
+          !cancelledIds.has(task.id) &&
+          task.dependencies.some((dependency) =>
+            cancelledIds.has(dependency),
+          )
+        ) {
+          cancelledIds.add(task.id);
+          added = true;
+        }
+      }
+    }
+    const at = this.timestamp();
+    this.database.transaction(() => {
+      for (const cancelledId of cancelledIds) {
+        const task = this.getTask(cancelledId);
+        if (["completed", "failed", "cancelled"].includes(task.status)) {
+          continue;
+        }
+        this.database.raw
+          .prepare(
+            `UPDATE leases SET status = 'released', heartbeat_at = ?
+             WHERE task_id = ? AND status = 'active'`,
+          )
+          .run(at, cancelledId);
+        this.database.raw
+          .prepare(
+            `UPDATE tasks SET status = 'cancelled', updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(at, cancelledId);
+        this.events.append({
+          missionId: task.missionId,
+          actorType: "agent",
+          actorId: claims.sessionId,
+          type: "task.cancelled",
+          payload: {
+            taskId: cancelledId,
+            rootTaskId: taskId,
+            reason,
+          },
+          createdAt: at,
+        });
+      }
+      this.touchMission(root.missionId, at);
+    });
+    const result = {
+      ...root,
+      status: "cancelled" as const,
+      updatedAt: at,
+    };
     this.saveIdempotent(
       claims.sessionId,
       idempotencyKey,
@@ -1749,7 +2197,7 @@ export class RelayRuntime {
         ? this.listMessages(missionId)
         : this.listInbox(
             {
-              ...(this.getSessionClaimsView(sessionId)),
+              ...(this.getSessionClaims(sessionId)),
             },
             true,
           );
@@ -1912,6 +2360,24 @@ export class RelayRuntime {
     });
   }
 
+  private getActiveClaim(sessionId: string): ClaimResult | null {
+    const row = this.database.raw
+      .prepare(
+        `SELECT * FROM leases
+         WHERE session_id = ? AND status = 'active'
+         ORDER BY acquired_at DESC LIMIT 1`,
+      )
+      .get(sessionId) as unknown as LeaseRow | undefined;
+    if (row === undefined) {
+      return null;
+    }
+    return {
+      task: this.getTask(row.task_id),
+      lease: mapLease(row),
+      checkpoint: this.getLatestCheckpoint(row.task_id),
+    };
+  }
+
   private assertLease(
     sessionId: string,
     taskId: string,
@@ -1952,7 +2418,7 @@ export class RelayRuntime {
     return this.listInbox(claims, false).length;
   }
 
-  private getSessionClaimsView(sessionId: string): SessionClaims {
+  getSessionClaims(sessionId: string): SessionClaims {
     const session = this.getSession(sessionId);
     const row = this.database.raw
       .prepare("SELECT token_jti FROM sessions WHERE id = ?")
@@ -2142,6 +2608,7 @@ function mapConnectionTicket(row: ConnectionTicketRow): ConnectionTicket {
     status: row.status,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
+    lastSessionId: row.last_session_id,
   };
 }
 

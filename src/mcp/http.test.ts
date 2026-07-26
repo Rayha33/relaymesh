@@ -55,7 +55,7 @@ describe("RelayMesh Streamable HTTP MCP", () => {
       "claude-session",
     );
     const tools = await first.client.listTools();
-    expect(tools.tools).toHaveLength(9);
+    expect(tools.tools).toHaveLength(11);
     expect(
       tools.tools.every(
         (tool) =>
@@ -97,9 +97,8 @@ describe("RelayMesh Streamable HTTP MCP", () => {
     const firstRelaySessionId = activeSessionId(runtime, mission.id);
     await first.transport.terminateSession();
     await new Promise((resolve) => setTimeout(resolve, 80));
-    const recovery = runtime.recover();
-    expect(recovery.lostSessions).toContain(firstRelaySessionId);
-    expect(recovery.requeuedTasks).toContain(task.id);
+    expect(runtime.getSession(firstRelaySessionId).status).toBe("left");
+    expect(runtime.getTask(task.id).status).toBe("queued");
 
     const second = await connect(
       fixture.baseUrl,
@@ -107,18 +106,25 @@ describe("RelayMesh Streamable HTTP MCP", () => {
       registration.agent.id,
       registration.agentKey,
       "deepseek-session",
-      firstRelaySessionId,
     );
     const recoveredResult = await second.client.callTool({
-      name: "relay_claim_task",
+      name: "relay_sync",
+      arguments: {
+        autoClaim: true,
+        includeAcknowledged: false,
+      },
     });
     const recovered = data(recoveredResult) as {
-      task: { id: string };
-      lease: { id: string; fencingToken: number };
-      checkpoint: { summary: string; nextAction: string };
+      protocol: string;
+      work: {
+        task: { id: string };
+        lease: { id: string; fencingToken: number };
+        checkpoint: { summary: string; nextAction: string };
+      };
     };
-    expect(recovered.task.id).toBe(task.id);
-    expect(recovered.checkpoint).toMatchObject({
+    expect(recovered.protocol).toBe("relaymesh/2");
+    expect(recovered.work.task.id).toBe(task.id);
+    expect(recovered.work.checkpoint).toMatchObject({
       summary: "Provider-neutral checkpoint",
       nextAction: "Continue in another model",
     });
@@ -127,8 +133,8 @@ describe("RelayMesh Streamable HTTP MCP", () => {
       name: "relay_complete_task",
       arguments: {
         taskId: task.id,
-        leaseId: recovered.lease.id,
-        fencingToken: recovered.lease.fencingToken,
+        leaseId: recovered.work.lease.id,
+        fencingToken: recovered.work.lease.fencingToken,
         resultJson: JSON.stringify({ recoveredBy: "deepseek-session" }),
       },
     });

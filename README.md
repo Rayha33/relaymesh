@@ -1,59 +1,86 @@
 # RelayMesh
 
-**Durable coordination for AI agent sessions that do not naturally cooperate.**
+**The durable coordination plane between Claude, ChatGPT, DeepSeek, Codex,
+Gemini, local models, and future AI agents.**
 
-RelayMesh gives Claude, Codex, Gemini, local models, and custom agents one
-model-independent place to coordinate work. A mission survives closed terminals,
-expired context windows, provider switches, network failures, and crashed agent
-processes.
+Models do not need to share a provider, context window, conversation format, or
+even cooperate correctly. RelayMesh gives every session one authoritative sync
+envelope and enforces ownership, recovery, and handoff outside the model.
 
 It is not another multi-model chat window. It is the runtime underneath them.
 
 ```text
-Agent A crashes ──> lease expires ──> task is fenced ──> checkpoint is loaded
-                                                        │
-Agent B joins  <────────────────────────────────────────┘
+Claude checkpoints ──> atomic handoff ──> DeepSeek receives the same task
+       │                                      + checkpoint + inbox + new fence
+       └── crashes ──> lease expires ────────> ChatGPT safely resumes
 ```
 
-## Why this exists
+## What changed in v0.3
 
-Multi-agent work commonly fails because:
+The first release exposed coordination primitives. v0.3 turns them into an
+enforced workflow:
 
-- chat history is mistaken for shared state;
-- two models silently work on the same task;
-- agents cannot address or challenge each other reliably;
-- a crashed session takes its decisions and progress with it;
-- the late response from a recovered session overwrites newer work;
-- outputs are pasted between tools without provenance.
+- **One-call sync:** `relay_sync` returns mission, peers, inbox, active lease,
+  latest checkpoint, artifacts, heartbeat, and canonical instructions.
+- **No duplicate claims:** reconnecting sync returns the already-owned work.
+- **Atomic handoff:** checkpoint, fence, release, role transfer, and durable
+  notification commit together without spending a failure attempt.
+- **Restart-proof connections:** a scoped ticket's last session is persisted;
+  recovery no longer depends on adapter process memory.
+- **Deterministic worker guard:** if a function-calling model exits without a
+  terminal task action, the wrapper checkpoints and safely hands work back.
+- **A2A v1.0:** public Agent Card plus authenticated HTTP+JSON message, task,
+  list, and cancellation endpoints.
+- **One-command launch:** create a mission, task, agent identities, and
+  Claude/ChatGPT/DeepSeek connection bundles at once.
 
-RelayMesh turns these failure modes into explicit protocol behavior:
+## Why this is hard to replace
 
-| Failure | RelayMesh primitive |
+The durable core is provider-independent and accumulates the coordination
+history that chat clients discard:
+
+| Failure | Runtime guarantee |
 | --- | --- |
-| Session disappears | Heartbeats and automatic loss detection |
-| Duplicate work | Exclusive, expiring task leases |
-| Late write after recovery | Monotonic fencing tokens |
-| Context/model switch | Model-independent checkpoints |
-| Agents do not cooperate | Typed, durable inbox messages |
-| Mutable outputs | Content-addressed artifacts |
-| Retry after timeout | Idempotency keys |
-| Disputed history | Signed, hash-chained event log |
+| Two models take the same work | Exclusive expiring lease |
+| Old model replies after recovery | Monotonic fencing token rejects it |
+| Provider or process crashes | Checkpointed task is requeued |
+| Model quits without handing off | Worker wrapper performs safe handoff |
+| Models see different context | Canonical `relaymesh/2` sync envelope |
+| Provider changes | Mission state contains no provider-specific ownership |
+| Request result is uncertain | Idempotency key returns the original result |
+| Output or history is disputed | Content hashes and signed event chain |
 
-## Five-minute demo
+## Quick start
 
-Requirements: Node.js 24 or newer.
-
-Fastest installed path:
+Requires Node.js 24 or newer.
 
 ```bash
 npm install --global github:Rayha33/relaymesh
 mkdir relaymesh-workspace && cd relaymesh-workspace
-relaymesh demo
+relaymesh start
 ```
 
-Open [http://127.0.0.1:4317](http://127.0.0.1:4317). In another terminal,
-run `relaymesh token` to get the administrator token. The installed package
-contains the production dashboard, CLI, TypeScript SDK, and MCP bridge.
+In a second terminal:
+
+```bash
+relaymesh launch \
+  --objective "Research, implement, and independently verify the result" \
+  --models claude,chatgpt,deepseek
+```
+
+The JSON result contains a scoped MCP URL, A2A v1.0 connection, bearer MCP
+settings, and local stdio MCP configuration for each model. Give each client
+its matching connection and tell it to call `relay_sync`. Treat the output as
+credentials.
+
+Open [http://127.0.0.1:4317](http://127.0.0.1:4317) for the operator
+dashboard. `relaymesh token` prints the local administrator token.
+
+For a pre-seeded visual demo:
+
+```bash
+relaymesh demo
+```
 
 Developer checkout:
 
@@ -61,109 +88,75 @@ Developer checkout:
 git clone https://github.com/Rayha33/relaymesh.git
 cd relaymesh
 npm install
+npm run check
 npm run demo
 ```
 
-Open [http://localhost:5173](http://localhost:5173), then get the local
-administrator token:
+## Connect any model
 
-```bash
-npm run cli -- token
-```
+All adapters reach the same state machine.
 
-`npm run demo` creates a mission with Codex-, Claude-, and Gemini-shaped agent
-identities plus a dependency-aware task graph. The generated agent keys are
-stored with mode `0600` in `data/demo-credentials.json`.
-
-For a clean non-demo runtime:
-
-```bash
-npm install
-npm run build
-npm start
-```
-
-The production server hosts the dashboard and API at
-[http://127.0.0.1:4317](http://127.0.0.1:4317).
-
-## Connect any AI model
-
-Every adapter reaches the same durable mission state. Provider changes do not
-change task ownership, checkpoints, messages, artifacts, or recovery rules.
-
-| Model or client | Best connection |
+| Client | Adapter |
 | --- | --- |
-| Claude Desktop / Claude Code | Local stdio MCP |
-| Codex and other local MCP clients | Local stdio MCP |
-| ChatGPT personal plugin | Scoped, revocable MCP connection URL |
+| Claude Desktop / Claude Code | stdio MCP |
+| Codex and local MCP clients | stdio MCP |
+| ChatGPT personal connection | Scoped Streamable HTTP MCP URL |
 | OpenAI Responses API | Bearer-authenticated Streamable HTTP MCP |
-| DeepSeek and OpenAI-compatible APIs | Strict function tools or included worker |
-| Custom Python, Go, Rust, or Java agents | REST protocol |
-| Any MCP-capable remote client | Authenticated Streamable HTTP MCP |
+| DeepSeek / OpenAI-compatible API | Strict function tools + included worker |
+| A2A v1.0 agents | Agent Card + authenticated HTTP+JSON |
+| Custom Python, Go, Rust, Java | REST protocol |
 
-Generate all connection values without guessing:
+Generate connection settings for an existing mission and agent:
 
 ```bash
 relaymesh connect \
   --mission <mission-id> \
   --agent <agent-id> \
   --model <model-name> \
-  --role builder \
+  --role worker \
   --capabilities general
 ```
 
-The command does not print or store the agent key. Insert the key returned once
-by `relaymesh agent:create`; treat it as a password.
-
-For a ChatGPT client that cannot send a custom API key, create a scoped,
-revocable connection URL:
+Create a revocable connection ticket for clients that need a scoped credential:
 
 ```bash
 relaymesh connect:create \
   --mission <mission-id> \
   --agent <agent-id> \
   --model chatgpt \
-  --role reviewer \
+  --role worker \
   --capabilities general \
   --ttl-hours 24
 ```
 
-Enter the returned HTTPS `mcpUrl` in ChatGPT's plugin settings. The URL is
-itself a restricted credential: it is bound to one mission, agent, model, role,
-capability set, and expiry. Revoke it at any time with
-`relaymesh connect:revoke --connection <connection-id>`.
-
-### Local MCP bridge
-
-RelayMesh ships an MCP server so an existing AI client can join a mission
-without learning a proprietary API.
-
-Set these variables when launching `npm run mcp`:
+The returned MCP URL and A2A Bearer value are restricted to one mission,
+agent, model, role, capability set, and expiry. Revoke them with:
 
 ```bash
-RELAYMESH_URL=http://127.0.0.1:4317
-RELAYMESH_MISSION_ID=<mission-id>
-RELAYMESH_AGENT_ID=<agent-id>
-RELAYMESH_AGENT_KEY=<agent-key>
-RELAYMESH_MODEL=<model-name>
-RELAYMESH_ROLE=builder
-RELAYMESH_CAPABILITIES=code.typescript,test.unit
+relaymesh connect:revoke --connection <connection-id>
 ```
 
-Ready-to-edit examples:
+### MCP
 
-- [Claude Desktop configuration](examples/mcp/claude-desktop.example.json)
-- [Codex configuration](examples/mcp/codex.example.toml)
+The local executable is `relaymesh-mcp`. Ready-to-edit configurations:
 
-The examples use the globally installed `relaymesh-mcp` executable. From a
-source checkout, replace the command with `npm`, use `["run", "mcp"]` as the
-arguments, and set the checkout as the working directory.
+- [Claude Desktop](examples/mcp/claude-desktop.example.json)
+- [Codex](examples/mcp/codex.example.toml)
 
-The bridge exposes:
+Remote Streamable HTTP MCP is available at:
 
+```text
+/mcp/<mission-id>/<agent-id>?model=<model>&role=<role>&capabilities=general
+/mcp/connect/<scoped-ticket>
+```
+
+Every model receives the same eleven tools:
+
+- `relay_sync`
 - `relay_status`
 - `relay_claim_task`
 - `relay_checkpoint`
+- `relay_handoff`
 - `relay_complete_task`
 - `relay_fail_task`
 - `relay_send_message`
@@ -171,20 +164,8 @@ The bridge exposes:
 - `relay_acknowledge`
 - `relay_publish_artifact`
 
-It also exposes the `relaymesh_agent_protocol` prompt and initialization
-instructions, which teach every model the same cooperation and recovery rules.
-
-### Remote MCP for OpenAI and other hosted clients
-
-The runtime exposes MCP Streamable HTTP at:
-
-```text
-http://127.0.0.1:4317/mcp/<mission-id>/<agent-id>?model=<model>&role=<role>&capabilities=general
-```
-
-Use the agent key as the Bearer token. The connection is stateful, renews the
-RelayMesh session automatically, validates the key on every request, and
-supports all nine tools exposed by the stdio bridge.
+The required lifecycle is: sync, work, checkpoint, then complete, fail, or
+handoff. The remote adapter validates credentials on every request.
 
 OpenAI Responses API example:
 
@@ -198,23 +179,50 @@ const response = await openai.responses.create({
     authorization: process.env.RELAYMESH_AGENT_KEY!,
     require_approval: "never",
   }],
-  input: "Join the mission, read your inbox, and continue the next task.",
+  input: "Call relay_sync, obey its current work fence, and continue.",
 });
 ```
 
-Hosted clients require an HTTPS URL. Keep RelayMesh behind a trusted private
-tunnel or hardened reverse proxy. Scoped connection URLs make personal ChatGPT
-connections work without custom headers. Public multi-user plugin publication
-still requires standards-compliant OAuth and per-user authorization.
+Hosted clients need HTTPS. Use a trusted private tunnel or hardened reverse
+proxy. A public multi-user ChatGPT integration still requires per-user OAuth
+and authorization.
+
+### A2A v1.0
+
+Discovery:
+
+```text
+GET /.well-known/agent-card.json
+```
+
+The Agent Card advertises the HTTP+JSON interface at `/a2a/v1`. Authenticated
+requests require:
+
+```http
+A2A-Version: 1.0
+Authorization: Bearer <scoped-ticket>
+Content-Type: application/a2a+json
+```
+
+Implemented methods:
+
+```text
+POST /a2a/v1/message:send
+GET  /a2a/v1/tasks
+GET  /a2a/v1/tasks/<task-id>
+POST /a2a/v1/tasks/<task-id>:cancel
+```
+
+`message:send` persists the incoming message, synchronizes the agent, and
+returns either an A2A Task containing the canonical RelayMesh sync-envelope
+artifact or an A2A Message when no compatible work is ready.
 
 ### DeepSeek and OpenAI-compatible models
 
-RelayMesh publishes strict function definitions at
-`/.well-known/relaymesh-tools.json` and exports both
-`relayFunctionTools` and `executeRelayFunction` from the TypeScript SDK.
-
-The included worker connects DeepSeek, OpenAI-compatible gateways, and local
-function-calling models without a provider SDK:
+Strict function schemas are published at
+`/.well-known/relaymesh-tools.json`. The included worker injects the sync
+envelope before the first model turn and safely hands leased work back if the
+model stops without a terminal action:
 
 ```bash
 MODEL_API_BASE=https://api.deepseek.com \
@@ -226,13 +234,7 @@ RELAYMESH_AGENT_KEY=<agent-key> \
 relaymesh worker:openai
 ```
 
-Change only `MODEL_API_BASE` and `MODEL_NAME` to use another compatible
-provider. The model still receives the same RelayMesh coordination tools.
-
-Runtime capabilities and transport metadata are discoverable at
-`/.well-known/relaymesh.json`; OpenAI-compatible tool schemas are discoverable
-at `/.well-known/relaymesh-tools.json`. RelayMesh does not advertise an A2A
-Agent Card until its planned A2A transport is implemented.
+Change only `MODEL_API_BASE` and `MODEL_NAME` for another compatible provider.
 
 ### TypeScript SDK
 
@@ -241,181 +243,74 @@ import { RelayAgentClient } from "relaymesh";
 
 const agent = new RelayAgentClient(agentId, agentKey);
 const { session } = await agent.join(missionId, {
-  model: "any-model",
-  role: "builder",
-  capabilities: ["code.typescript"],
+  model: "claude-or-gpt-or-anything",
+  role: "worker",
+  capabilities: ["general"],
   recoveryFromSessionId: null,
 });
 
-const claim = await session.claim();
-if (claim) {
-  const retryKey = crypto.randomUUID();
-  await session.checkpoint(claim.task.id, {
-    leaseId: claim.lease.id,
-    fencingToken: claim.lease.fencingToken,
-    summary: "Implemented the event store.",
-    nextAction: "Run the recovery tests.",
+const state = await session.sync();
+if (state.work) {
+  await session.handoff(state.work.task.id, {
+    leaseId: state.work.lease.id,
+    fencingToken: state.work.lease.fencingToken,
+    summary: "Durable work completed so far.",
+    nextAction: "Independently verify it.",
     decisions: [],
     artifactIds: [],
     opaqueState: null,
-  }, {
-    // Reuse this key if the request times out and must be retried.
-    idempotencyKey: retryKey,
+    targetRole: "reviewer",
+    subject: "Ready for review",
+    content: "Resume from the checkpoint.",
+    priority: 10,
   });
 }
 ```
 
-See [examples/worker.ts](examples/worker.ts) for a runnable worker.
+## Guarantees and limits
 
-## What recovery guarantees
+RelayMesh provides at-least-once work delivery. A runtime cannot generally know
+whether an external side effect happened just before a model crashed. Use
+connector-specific idempotency for external writes.
 
-RelayMesh deliberately provides **at-least-once delivery**, not a false
-exactly-once promise.
+RelayMesh does guarantee that an expired or handed-off lease cannot later
+complete the task with its stale fence.
 
-If an agent performs an external side effect and crashes before reporting it,
-no general runtime can know whether that side effect happened. RelayMesh makes
-retries safe where possible through:
+v0.3 is a single-node SQLite runtime. It binds to `127.0.0.1`, hashes static
+credentials, signs mission events with Ed25519, validates schemas, rate-limits
+requests, and never executes model-supplied shell commands. Do not expose it
+directly to the public internet.
 
-- client idempotency keys;
-- task lease IDs;
-- monotonically increasing fencing tokens;
-- explicit checkpoints;
-- immutable artifact hashes;
-- connector-specific idempotency for external actions.
+Read:
 
-A completion from an expired lease is rejected even when the old process
-eventually returns.
-
-## Core concepts
-
-### Mission
-
-The durable owner of an objective, task graph, messages, artifacts, sessions,
-and event history.
-
-### Agent identity and session
-
-An agent identity is stable. A session is short-lived, model-specific, scoped
-to one mission, and authenticated with an Ed25519-signed JWT.
-
-### Task lease
-
-Compatible sessions claim tasks based on role, capabilities, dependencies, and
-priority. Ownership must be renewed by heartbeat.
-
-### Recovery checkpoint
-
-A compact capsule containing completed work, decisions, rejected alternatives,
-artifacts, next action, and optional model-specific state.
-
-### Durable message
-
-Messages use explicit intents: `inform`, `request`, `response`, `challenge`,
-`decision`, `handoff`, or `blocker`. Delivery is replayable until acknowledged.
-
-## Architecture
-
-```text
-Claude / Codex / Gemini / local agents
-            │ REST SDK · MCP
-            ▼
-┌──────────────────────────────┐
-│ RelayMesh gateway            │
-│ auth · validation · limits   │
-├──────────────────────────────┤
-│ Coordination runtime         │
-│ scheduler · leases · inbox   │
-│ checkpoints · recovery       │
-├──────────────────────────────┤
-│ SQLite WAL + signed events   │
-└──────────────┬───────────────┘
-               ▼
-       Operator dashboard
-```
-
-Detailed documents:
-
-- [Architecture and state machines](docs/ARCHITECTURE.md)
 - [Coordination protocol](docs/PROTOCOL.md)
+- [Architecture and state machines](docs/ARCHITECTURE.md)
 - [Threat model](docs/THREAT_MODEL.md)
-- [Durable event-log decision](docs/DECISIONS/0001-durable-event-log.md)
-
-## Docker
-
-```bash
-docker compose up --build
-docker compose exec relaymesh \
-  node dist/server/src/cli/index.js token
-```
-
-The compose file binds RelayMesh to localhost and persists `/app/data`.
+- [Security policy](SECURITY.md)
 
 ## Operations
 
 | Command | Purpose |
 | --- | --- |
-| `relaymesh start` | Start an installed production runtime |
-| `relaymesh demo` | Seed a demo and start an installed runtime |
-| `relaymesh-mcp` | Connect an installed AI client over MCP |
-| `relaymesh connect ...` | Generate provider-specific connection settings |
-| `relaymesh connect:create ...` | Create a scoped ChatGPT/remote MCP URL |
-| `relaymesh connect:revoke ...` | Revoke a scoped connection immediately |
-| `relaymesh worker:openai` | Run a DeepSeek/OpenAI-compatible model worker |
-| `npm run dev` | Run API and dashboard with live reload |
-| `npm run build` | Produce the production server and web bundle |
-| `npm start` | Start the production runtime |
-| `npm run cli -- token` | Read the locally generated admin token |
-| `npm run demo:seed` | Add the heterogeneous-agent demo |
-| `npm run mcp` | Start the stdio MCP bridge |
-| `npm run check` | Typecheck, lint, test, and production-build |
+| `relaymesh start` | Start the installed production runtime |
+| `relaymesh launch ...` | Create a mission and multi-model connection bundle |
+| `relaymesh demo` | Seed and run the visual demo |
+| `relaymesh-mcp` | Start the local MCP bridge |
+| `relaymesh connect:create ...` | Issue scoped MCP and A2A credentials |
+| `relaymesh connect:revoke ...` | Revoke a connection immediately |
+| `relaymesh worker:openai` | Run the guarded OpenAI-compatible worker |
+| `npm run check` | Typecheck, lint, test, and build |
 | `npm run test:coverage` | Run coverage gates |
+| `npm run test:package` | Verify the packed consumer install and audit |
 
-Environment options are documented in [.env.example](.env.example).
+Environment options are in [.env.example](.env.example).
 
-## Security posture
+## Scope after v0.3
 
-- Binds to `127.0.0.1` by default.
-- Stores agent keys only as scrypt hashes.
-- Uses short-lived, mission-scoped Ed25519 session tokens.
-- Redacts credentials from logs.
-- Enforces request schemas and body/rate limits.
-- Signs a separate hash chain for every mission.
-- Never executes shell commands or fetches arbitrary URLs.
+Next layers are a PostgreSQL event-store adapter, Python SDK, OAuth/team
+identity, policy-as-code, encrypted remote relay, external-action connectors,
+and OpenTelemetry. The provider-neutral mission and sync protocol do not need
+to change when those arrive.
 
-Version `0.2` is intentionally single-node. Do not expose it directly to the
-public internet. Read [SECURITY.md](SECURITY.md) and the
-[threat model](docs/THREAT_MODEL.md) before remote deployment.
-
-## Current scope
-
-Ready now:
-
-- local durable runtime;
-- dashboard;
-- TypeScript SDK;
-- CLI;
-- MCP bridge;
-- local stdio and remote Streamable HTTP MCP transports;
-- strict function tools for DeepSeek and OpenAI-compatible models;
-- provider-specific connection generator;
-- capability scheduling;
-- dependency-aware tasks;
-- leases, fencing, checkpoints, inbox, artifacts, and automatic recovery;
-- signed event verification;
-- one-command heterogeneous-agent demo;
-- Docker and CI.
-
-Planned:
-
-- PostgreSQL event-store adapter;
-- A2A JSON-RPC transport;
-- Python SDK;
-- encrypted remote relay;
-- pluggable external-action connectors;
-- OpenTelemetry traces;
-- team identities and policy-as-code.
-
-## Contributing
-
-RelayMesh is MIT licensed. Issues and pull requests are welcome. Start with
+RelayMesh is MIT licensed. Contributions are welcome; see
 [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -10,6 +10,7 @@ export interface RelayConfig {
   leaseSweepMs: number;
   leaseDurationMs: number;
   sessionTtlMs: number;
+  publicUrl?: string;
 }
 
 export function loadConfig(
@@ -49,6 +50,14 @@ export function loadConfig(
   };
   if (adminToken !== undefined && adminToken.length > 0) {
     config.adminToken = adminToken;
+  }
+  const publicUrl = env.RELAYMESH_PUBLIC_URL?.trim();
+  if (publicUrl !== undefined && publicUrl.length > 0) {
+    const parsed = new URL(publicUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new Error("RELAYMESH_PUBLIC_URL must use HTTP or HTTPS");
+    }
+    config.publicUrl = parsed.origin;
   }
   return config;
 }

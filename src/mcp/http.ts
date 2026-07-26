@@ -10,10 +10,15 @@ import {
   type CompleteTaskInput,
   type CreateArtifactInput,
   type FailTaskInput,
+  type HandoffTaskInput,
   type JoinSessionInput,
   type SendMessageInput,
+  type SyncSessionInput,
 } from "../core/schemas.js";
-import type { RelayRuntime } from "../core/runtime.js";
+import type {
+  JoinedSession,
+  RelayRuntime,
+} from "../core/runtime.js";
 import type { Agent, AgentSession } from "../core/types.js";
 import {
   createRelayMcpServer,
@@ -22,8 +27,6 @@ import {
 
 interface Connection {
   endpointKey: string;
-  missionId: string;
-  agentId: string;
   relaySessionId: string;
   credentialDigest: Buffer;
   transport: StreamableHTTPServerTransport;
@@ -37,6 +40,7 @@ interface ConnectionIdentity {
   agent: Agent;
   credential: string;
   joinInput: JoinSessionInput;
+  connectionId: string | null;
 }
 
 interface McpParams {
@@ -60,7 +64,6 @@ export async function registerRelayMcpHttp(
   runtime: RelayRuntime,
 ): Promise<void> {
   const connections = new Map<string, Connection>();
-  const lastRelaySession = new Map<string, string>();
 
   app.addHook("onClose", async () => {
     const active = [...connections.values()];
@@ -92,14 +95,13 @@ export async function registerRelayMcpHttp(
         missionId: request.params.missionId,
         agent,
         credential: agentKey,
+        connectionId: null,
         joinInput: joinSessionSchema.parse({
           model: limited(request.query.model, "remote-mcp", 120),
           role: limited(request.query.role, "worker", 80),
           capabilities: csv(request.query.capabilities ?? "general"),
           recoveryFromSessionId:
-            request.query.recoveryFromSessionId?.trim() ||
-            lastRelaySession.get(endpointKey) ||
-            null,
+            request.query.recoveryFromSessionId?.trim() || null,
         }),
       };
       return handleMcpRequest(
@@ -108,7 +110,6 @@ export async function registerRelayMcpHttp(
         identity,
         runtime,
         connections,
-        lastRelaySession,
         app,
       );
     },
@@ -129,12 +130,12 @@ export async function registerRelayMcpHttp(
         missionId: ticket.missionId,
         agent,
         credential: request.params.ticket,
+        connectionId: ticket.id,
         joinInput: {
           model: ticket.model,
           role: ticket.role,
           capabilities: ticket.capabilities,
-          recoveryFromSessionId:
-            lastRelaySession.get(endpointKey) ?? null,
+          recoveryFromSessionId: null,
         },
       };
       return handleMcpRequest(
@@ -143,7 +144,6 @@ export async function registerRelayMcpHttp(
         identity,
         runtime,
         connections,
-        lastRelaySession,
         app,
       );
     },
@@ -156,7 +156,6 @@ async function handleMcpRequest(
   identity: ConnectionIdentity,
   runtime: RelayRuntime,
   connections: Map<string, Connection>,
-  lastRelaySession: Map<string, string>,
   app: FastifyInstance,
 ) {
   const sessionId = header(request, "mcp-session-id");
@@ -209,7 +208,6 @@ async function handleMcpRequest(
       identity,
       runtime,
       connections,
-      lastRelaySession,
       app,
     );
   }
@@ -241,16 +239,41 @@ async function createConnection(
   identity: ConnectionIdentity,
   runtime: RelayRuntime,
   connections: Map<string, Connection>,
-  lastRelaySession: Map<string, string>,
   app: FastifyInstance,
 ): Promise<Connection> {
-  const joined = await runtime.joinSession(
-    identity.missionId,
-    identity.agent,
-    identity.joinInput,
-    randomUUID(),
-  );
-  const claims = await runtime.authenticateSession(joined.sessionToken);
+  let joined: JoinedSession;
+  let claims: SessionClaims;
+  if (identity.connectionId === null) {
+    const joinInput: JoinSessionInput = {
+      ...identity.joinInput,
+      recoveryFromSessionId:
+        identity.joinInput.recoveryFromSessionId ??
+        runtime.findRecoverySession(
+          identity.missionId,
+          identity.agent.id,
+        ),
+    };
+    joined = await runtime.joinSession(
+      identity.missionId,
+      identity.agent,
+      joinInput,
+      randomUUID(),
+    );
+    claims = await runtime.authenticateSession(joined.sessionToken);
+  } else {
+    const connection = await runtime.ensureConnectionSession(
+      identity.credential,
+    );
+    joined = {
+      session: connection.session,
+      sessionToken: "",
+      snapshot: runtime.getMissionSnapshot(
+        connection.connection.missionId,
+        connection.session.id,
+      ),
+    };
+    claims = connection.claims;
+  }
   const session = new RuntimeMcpSession(runtime, claims, joined.session);
   const server = createRelayMcpServer(session, joined);
   const transport = new StreamableHTTPServerTransport({
@@ -276,8 +299,6 @@ async function createConnection(
   heartbeatTimer.unref();
   const connection: Connection = {
     endpointKey: identity.endpointKey,
-    missionId: identity.missionId,
-    agentId: identity.agent.id,
     relaySessionId: joined.session.id,
     credentialDigest: digest(identity.credential),
     transport,
@@ -286,7 +307,16 @@ async function createConnection(
   };
   transport.onclose = () => {
     clearInterval(heartbeatTimer);
-    lastRelaySession.set(identity.endpointKey, joined.session.id);
+    try {
+      if (runtime.getSession(joined.session.id).status === "active") {
+        runtime.leaveSession(claims);
+      }
+    } catch (error) {
+      app.log.warn(
+        { err: error, relaySessionId: joined.session.id },
+        "Could not finalize closed MCP session",
+      );
+    }
     const sessionId = transport.sessionId;
     if (sessionId !== undefined) {
       connections.delete(sessionId);
@@ -304,6 +334,14 @@ class RuntimeMcpSession implements RelayMcpSession {
     private readonly claims: SessionClaims,
     readonly identity: AgentSession,
   ) {}
+
+  async sync(input: SyncSessionInput) {
+    return this.runtime.syncSession(
+      this.claims,
+      input,
+      randomUUID(),
+    );
+  }
 
   async heartbeat() {
     return this.runtime.heartbeat(this.claims, randomUUID());
@@ -333,6 +371,15 @@ class RuntimeMcpSession implements RelayMcpSession {
 
   async fail(taskId: string, input: FailTaskInput) {
     return this.runtime.failTask(
+      this.claims,
+      taskId,
+      input,
+      randomUUID(),
+    );
+  }
+
+  async handoff(taskId: string, input: HandoffTaskInput) {
+    return this.runtime.handoffTask(
       this.claims,
       taskId,
       input,

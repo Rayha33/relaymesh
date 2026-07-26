@@ -210,6 +210,19 @@ export class RelayDatabase {
         PRIMARY KEY (actor_id, idempotency_key)
       );
     `);
+
+    const connectionColumns = this.raw
+      .prepare("PRAGMA table_info(connection_tickets)")
+      .all() as Array<{ name: string }>;
+    if (
+      !connectionColumns.some(
+        (column) => column.name === "last_session_id",
+      )
+    ) {
+      this.raw.exec(
+        "ALTER TABLE connection_tickets ADD COLUMN last_session_id TEXT",
+      );
+    }
   }
 
   close(): void {

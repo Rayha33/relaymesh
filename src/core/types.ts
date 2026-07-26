@@ -48,6 +48,7 @@ export interface ConnectionTicket {
   status: "active" | "revoked";
   expiresAt: string;
   createdAt: string;
+  lastSessionId: string | null;
 }
 
 export interface Agent {
@@ -185,6 +186,39 @@ export interface ClaimResult {
   task: Task;
   lease: Lease;
   checkpoint: Checkpoint | null;
+}
+
+export interface RelaySyncEnvelope {
+  protocol: "relaymesh/2";
+  generatedAt: string;
+  state: "working" | "waiting" | "mission_terminal";
+  mission: Mission;
+  session: AgentSession;
+  peers: Array<{
+    sessionId: string;
+    agentName: string;
+    provider: string;
+    model: string;
+    role: string;
+    capabilities: string[];
+    status: SessionStatus;
+    lastHeartbeatAt: string;
+  }>;
+  heartbeat: {
+    nextHeartbeatDueAt: string;
+    renewedLeaseIds: string[];
+  };
+  work: ClaimResult | null;
+  inbox: RelayMessage[];
+  artifacts: Artifact[];
+  eventSequence: number;
+  instructions: string[];
+}
+
+export interface HandoffResult {
+  checkpoint: Checkpoint;
+  task: Task;
+  message: RelayMessage;
 }
 
 export interface RecoveryReport {

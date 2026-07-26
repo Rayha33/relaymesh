@@ -49,6 +49,7 @@ try {
   const packageRoot = join(installation, "node_modules", "relaymesh");
   for (const path of [
     "dist/server/src/cli/index.js",
+    "dist/server/src/a2a/index.js",
     "dist/server/src/mcp/http.js",
     "dist/server/src/mcp/index.js",
     "dist/server/src/sdk/index.js",
@@ -71,7 +72,7 @@ try {
     [
       "--input-type=module",
       "--eval",
-      "import { RelayAgentClient, executeRelayFunction, relayFunctionTools } from 'relaymesh'; if (typeof RelayAgentClient !== 'function' || typeof executeRelayFunction !== 'function' || relayFunctionTools.length !== 9) process.exit(1)",
+      "import { RelayAgentClient, executeRelayFunction, relayFunctionTools } from 'relaymesh'; if (typeof RelayAgentClient !== 'function' || typeof executeRelayFunction !== 'function' || relayFunctionTools.length !== 11) process.exit(1)",
     ],
     installation,
   );

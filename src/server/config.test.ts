@@ -31,6 +31,7 @@ describe("server configuration", () => {
           RELAYMESH_LEASE_SWEEP_MS: "500",
           RELAYMESH_LEASE_DURATION_MS: "4000",
           RELAYMESH_SESSION_TTL_MS: "60000",
+          RELAYMESH_PUBLIC_URL: " https://relaymesh.example.com/root/ ",
         },
         cwd,
       ),
@@ -44,6 +45,7 @@ describe("server configuration", () => {
       leaseSweepMs: 500,
       leaseDurationMs: 4000,
       sessionTtlMs: 60000,
+      publicUrl: "https://relaymesh.example.com",
     });
   });
 
@@ -63,5 +65,20 @@ describe("server configuration", () => {
         "/tmp/relaymesh-config-empty-token",
       ),
     ).not.toHaveProperty("adminToken");
+  });
+
+  it("rejects an invalid public origin", () => {
+    expect(() =>
+      loadConfig(
+        { RELAYMESH_PUBLIC_URL: "not a URL" },
+        "/tmp/relaymesh-config-invalid-url",
+      ),
+    ).toThrow();
+    expect(() =>
+      loadConfig(
+        { RELAYMESH_PUBLIC_URL: "ftp://relaymesh.example.com" },
+        "/tmp/relaymesh-config-invalid-protocol",
+      ),
+    ).toThrow(/HTTP or HTTPS/);
   });
 });

@@ -99,6 +99,7 @@ async function runAdminCommand(): Promise<void> {
             `/mcp/connect/${encodeURIComponent(created.ticket)}`,
             baseUrl,
           ).href,
+          a2a: a2aConnection(created.ticket),
           warning:
             "This URL is a scoped credential. Do not commit, share, or log it.",
         });
@@ -114,6 +115,97 @@ async function runAdminCommand(): Promise<void> {
             required("--connection"),
           ),
         );
+        break;
+      }
+      case "launch": {
+        const objective = required("--objective");
+        const title = option("--title") ?? "RelayMesh mission";
+        const models = defaultCapabilities(
+          csv(option("--models") ?? "claude,chatgpt,deepseek"),
+        );
+        const role = option("--role") ?? "worker";
+        const capabilities = defaultCapabilities(
+          csv(option("--capabilities")),
+        );
+        const ttlHours = Number.parseInt(
+          option("--ttl-hours") ?? "24",
+          10,
+        );
+        const mission = await admin.createMission({ title, objective });
+        const task = await admin.createTask(mission.id, {
+          title: "Complete the mission objective",
+          description: objective,
+          parentTaskId: null,
+          priority: 100,
+          requiredCapabilities: capabilities,
+          dependencies: [],
+          assignedRole: role,
+          maxAttempts: 10,
+        });
+        const connections = [];
+        for (const model of models) {
+          const registration = await admin.createAgent({
+            name: `${model} ${role}`,
+            provider: providerFor(model),
+            defaultModel: model,
+            description: `Zero-config ${model} connection for ${title}`,
+          });
+          const issued = await admin.createConnectionTicket(
+            mission.id,
+            {
+              agentId: registration.agent.id,
+              model,
+              role,
+              capabilities,
+              expiresInHours: ttlHours,
+            },
+          );
+          const scopedUrl = new URL(
+            `/mcp/connect/${encodeURIComponent(issued.ticket)}`,
+            baseUrl,
+          ).href;
+          const bearerUrl = new URL(
+            `/mcp/${mission.id}/${registration.agent.id}`,
+            baseUrl,
+          );
+          bearerUrl.searchParams.set("model", model);
+          bearerUrl.searchParams.set("role", role);
+          bearerUrl.searchParams.set(
+            "capabilities",
+            capabilities.join(","),
+          );
+          connections.push({
+            model,
+            provider: registration.agent.provider,
+            agentId: registration.agent.id,
+            agentKey: registration.agentKey,
+            scopedMcpUrl: scopedUrl,
+            a2a: a2aConnection(issued.ticket),
+            bearerMcpUrl: bearerUrl.href,
+            stdioMcp: {
+              command: "relaymesh-mcp",
+              env: {
+                RELAYMESH_URL: baseUrl,
+                RELAYMESH_MISSION_ID: mission.id,
+                RELAYMESH_AGENT_ID: registration.agent.id,
+                RELAYMESH_AGENT_KEY: registration.agentKey,
+                RELAYMESH_MODEL: model,
+                RELAYMESH_ROLE: role,
+                RELAYMESH_CAPABILITIES: capabilities.join(","),
+              },
+            },
+          });
+        }
+        print({
+          protocol: "relaymesh/2",
+          mission,
+          task,
+          connections,
+          next:
+            "Give each client its matching MCP connection. Every model starts with relay_sync and sees the same durable envelope.",
+          warning:
+            "This output contains one-time agent keys and scoped URLs. Store it privately.",
+        });
         break;
       }
       case "mission:create": {
@@ -181,7 +273,7 @@ function printConnectionGuide(): void {
   );
 
   print({
-    protocol: "relaymesh/1",
+    protocol: "relaymesh/2",
     note: "Replace <agent-key> with the key returned by agent:create. Treat it as a secret.",
     stdioMcp: {
       useWith: ["Claude Desktop", "Claude Code", "Codex", "local MCP clients"],
@@ -222,7 +314,33 @@ function printConnectionGuide(): void {
       ],
       runnableCommand: "relaymesh worker:openai",
     },
+    a2a: {
+      useWith: ["A2A v1.0 HTTP+JSON clients"],
+      note:
+        "Run connect:create to issue the required scoped ticket and print the authenticated A2A connection.",
+      agentCardUrl: new URL(
+        "/.well-known/agent-card.json",
+        baseUrl,
+      ).href,
+    },
   });
+}
+
+function a2aConnection(ticket: string) {
+  return {
+    agentCardUrl: new URL(
+      "/.well-known/agent-card.json",
+      baseUrl,
+    ).href,
+    interfaceUrl: new URL("/a2a/v1", baseUrl).href,
+    protocolBinding: "HTTP+JSON",
+    headers: {
+      "A2A-Extensions":
+        "https://github.com/Rayha33/relaymesh/blob/main/docs/PROTOCOL.md#relaymesh-a2a-extension-v1",
+      "A2A-Version": "1.0",
+      Authorization: `Bearer ${ticket}`,
+    },
+  };
 }
 
 function option(name: string): string | null {
@@ -252,6 +370,21 @@ function csv(value: string | null): string[] {
 
 function defaultCapabilities(values: string[]): string[] {
   return values.length > 0 ? values : ["general"];
+}
+
+function providerFor(model: string): string {
+  const normalized = model.toLowerCase();
+  if (normalized.includes("claude")) return "Anthropic";
+  if (
+    normalized.includes("chatgpt") ||
+    normalized.includes("gpt") ||
+    normalized.includes("openai")
+  ) {
+    return "OpenAI";
+  }
+  if (normalized.includes("deepseek")) return "DeepSeek";
+  if (normalized.includes("gemini")) return "Google";
+  return "OpenAI-compatible";
 }
 
 function readToken(path: string): string | null {
@@ -286,6 +419,9 @@ Commands:
   demo
   demo:seed
   worker:openai
+  launch --objective TEXT [--title TEXT]
+         [--models claude,chatgpt,deepseek] [--role ROLE]
+         [--capabilities a,b] [--ttl-hours N]
   token
   connect --mission ID --agent ID [--model MODEL] [--role ROLE]
           [--capabilities a,b]

@@ -56,29 +56,43 @@ const heartbeatTimer = setInterval(() => {
 }, 10_000);
 heartbeatTimer.unref();
 
+const initialEnvelope = await session.sync({
+  autoClaim: true,
+  includeAcknowledged: false,
+});
 const messages: ChatMessage[] = [
   {
     role: "system",
     content: [
       "You are one worker in a RelayMesh mission shared with other AI model sessions.",
-      "RelayMesh is canonical. Start with relay_status and relay_inbox, then claim work.",
+      "RelayMesh is canonical. The runtime already synchronized and claimed at most one task before this model turn.",
+      "Call relay_sync again whenever state may have changed.",
       "Checkpoint meaningful progress and before external side effects.",
       "Use durable typed messages for requests, challenges, decisions, handoffs, and blockers.",
-      "Complete or fail every claimed task with its exact lease ID and fencing token.",
+      "Complete, fail, or hand off every claimed task with its exact lease ID and fencing token.",
       "Never reuse stale lease data after a reconnect.",
       "Do not invent task IDs, lease IDs, fencing tokens, messages, or artifacts.",
     ].join(" "),
   },
   {
     role: "user",
-    content: `Join mission "${joined.snapshot.mission.title}". Objective: ${joined.snapshot.mission.objective}`,
+    content: [
+      `Join mission "${joined.snapshot.mission.title}".`,
+      "The following RelayMesh v2 envelope is authoritative:",
+      JSON.stringify(initialEnvelope),
+    ].join("\n"),
   },
 ];
 
+let taskFinalized = false;
+let lastAssistantContent = "";
 try {
   for (let turn = 0; turn < config.maxTurns; turn += 1) {
     const assistant = await complete(messages);
     messages.push(assistant);
+    if (assistant.content !== null) {
+      lastAssistantContent = assistant.content;
+    }
     const toolCalls = assistant.tool_calls ?? [];
     if (toolCalls.length === 0) {
       if (assistant.content !== null) {
@@ -87,7 +101,6 @@ try {
       break;
     }
 
-    let terminal = false;
     for (const call of toolCalls) {
       try {
         const args = JSON.parse(call.function.arguments) as unknown;
@@ -101,9 +114,10 @@ try {
           tool_call_id: call.id,
           content: JSON.stringify(output),
         });
-        terminal ||= [
+        taskFinalized ||= [
           "relay_complete_task",
           "relay_fail_task",
+          "relay_handoff",
         ].includes(call.function.name);
       } catch (error) {
         messages.push({
@@ -115,12 +129,45 @@ try {
         });
       }
     }
-    if (terminal) {
+    if (taskFinalized) {
       break;
     }
   }
 } finally {
   clearInterval(heartbeatTimer);
+  if (!taskFinalized) {
+    const finalEnvelope = await session
+      .sync({ autoClaim: false, includeAcknowledged: false })
+      .catch(() => null);
+    if (finalEnvelope?.work) {
+      const { task, lease } = finalEnvelope.work;
+      await session.handoff(task.id, {
+        leaseId: lease.id,
+        fencingToken: lease.fencingToken,
+        summary:
+          lastAssistantContent.slice(0, 20_000) ||
+          "The provider worker stopped before producing a terminal task mutation.",
+        nextAction:
+          "Call relay_sync, inspect this checkpoint, and continue or complete the task.",
+        decisions: [],
+        artifactIds: [],
+        opaqueState: {
+          priorModel: config.model,
+          reason: "worker_exit",
+        },
+        targetRole: config.role,
+        subject: "Automatic safe handoff after worker exit",
+        content:
+          "RelayMesh preserved the last model output and released ownership without consuming a failure attempt.",
+        priority: 20,
+      })
+      .catch((error: unknown) => {
+        process.stderr.write(
+          `RelayMesh automatic handoff failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
+    }
+  }
   await session.leave().catch(() => undefined);
 }
 

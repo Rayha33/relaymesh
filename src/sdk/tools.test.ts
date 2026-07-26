@@ -6,16 +6,18 @@ import {
 } from "./tools.js";
 
 describe("OpenAI-compatible RelayMesh tools", () => {
-  it("publishes nine strict, closed JSON schemas", () => {
-    expect(relayFunctionTools).toHaveLength(9);
+  it("publishes eleven strict, closed JSON schemas", () => {
+    expect(relayFunctionTools).toHaveLength(11);
     expect(
       relayFunctionTools.map((tool) => tool.function.name),
     ).toEqual([
+      "relay_sync",
       "relay_status",
       "relay_claim_task",
       "relay_checkpoint",
       "relay_complete_task",
       "relay_fail_task",
+      "relay_handoff",
       "relay_send_message",
       "relay_inbox",
       "relay_acknowledge",

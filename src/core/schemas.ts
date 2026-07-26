@@ -79,6 +79,18 @@ export const checkpointSchema = z.object({
   opaqueState: z.record(z.string(), z.unknown()).nullable().default(null),
 });
 
+export const syncSessionSchema = z.object({
+  autoClaim: z.boolean().default(true),
+  includeAcknowledged: z.boolean().default(false),
+});
+
+export const handoffTaskSchema = checkpointSchema.extend({
+  targetRole: z.string().trim().min(1).max(80),
+  subject: shortText.default("Task handoff"),
+  content: longText,
+  priority: z.number().int().min(-100).max(100).default(10),
+});
+
 export const sendMessageSchema = z
   .object({
     toSessionId: z.string().uuid().nullable().default(null),
@@ -125,6 +137,8 @@ export type CreateConnectionTicketInput = z.infer<
   typeof createConnectionTicketSchema
 >;
 export type CheckpointInput = z.infer<typeof checkpointSchema>;
+export type SyncSessionInput = z.infer<typeof syncSessionSchema>;
+export type HandoffTaskInput = z.infer<typeof handoffTaskSchema>;
 export type SendMessageInput = z.infer<typeof sendMessageSchema>;
 export type CompleteTaskInput = z.infer<typeof completeTaskSchema>;
 export type FailTaskInput = z.infer<typeof failTaskSchema>;

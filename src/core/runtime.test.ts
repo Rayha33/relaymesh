@@ -82,6 +82,226 @@ async function registerAndJoin(
 }
 
 describe("RelayRuntime", () => {
+  it("synchronizes a model into one portable envelope without duplicate claims", async () => {
+    const { runtime } = createContext();
+    const mission = runtime.createMission({
+      title: "Portable context",
+      objective: "Give every provider the same durable state.",
+    });
+    const task = runtime.createTask(mission.id, {
+      title: "Use one envelope",
+      description: "Synchronize before model reasoning.",
+      parentTaskId: null,
+      priority: 10,
+      requiredCapabilities: ["general"],
+      dependencies: [],
+      assignedRole: "worker",
+      maxAttempts: 3,
+    });
+    const worker = await registerAndJoin(
+      runtime,
+      mission.id,
+      "Claude Worker",
+      ["general"],
+    );
+
+    const first = runtime.syncSession(worker.claims, {
+      autoClaim: true,
+      includeAcknowledged: false,
+    });
+    expect(first).toMatchObject({
+      protocol: "relaymesh/2",
+      state: "working",
+      mission: { id: mission.id },
+      work: { task: { id: task.id }, lease: { fencingToken: 1 } },
+    });
+    const second = runtime.syncSession(worker.claims, {
+      autoClaim: true,
+      includeAcknowledged: false,
+    });
+    expect(second.work?.lease.id).toBe(first.work?.lease.id);
+    expect(runtime.getTask(task.id).attempt).toBe(1);
+  });
+
+  it("hands checkpointed work to another model atomically", async () => {
+    const { runtime } = createContext();
+    const mission = runtime.createMission({
+      title: "Cross-model handoff",
+      objective: "Move work without consuming a failure attempt.",
+    });
+    const task = runtime.createTask(mission.id, {
+      title: "Implement then review",
+      description: "Builder hands the durable state to a reviewer.",
+      parentTaskId: null,
+      priority: 10,
+      requiredCapabilities: ["general"],
+      dependencies: [],
+      assignedRole: "builder",
+      maxAttempts: 2,
+    });
+    const builder = await registerAndJoin(
+      runtime,
+      mission.id,
+      "Claude Builder",
+      ["general"],
+      "builder",
+    );
+    const claimed = runtime.syncSession(builder.claims, {
+      autoClaim: true,
+      includeAcknowledged: false,
+    }).work!;
+    const handedOff = runtime.handoffTask(
+      builder.claims,
+      task.id,
+      {
+        leaseId: claimed.lease.id,
+        fencingToken: claimed.lease.fencingToken,
+        summary: "Implementation complete.",
+        nextAction: "Review the implementation.",
+        decisions: [{ decision: "Use an atomic handoff" }],
+        artifactIds: [],
+        opaqueState: { provider: "claude" },
+        targetRole: "reviewer",
+        subject: "Ready for review",
+        content: "Continue from the checkpoint and verify the result.",
+        priority: 20,
+      },
+      "handoff-builder-reviewer",
+    );
+    expect(handedOff.task).toMatchObject({
+      status: "queued",
+      assignedRole: "reviewer",
+      attempt: 0,
+    });
+    expect(() =>
+      runtime.completeTask(builder.claims, task.id, {
+        leaseId: claimed.lease.id,
+        fencingToken: claimed.lease.fencingToken,
+        result: {},
+      }),
+    ).toThrow("stale");
+
+    const reviewer = await registerAndJoin(
+      runtime,
+      mission.id,
+      "DeepSeek Reviewer",
+      ["general"],
+      "reviewer",
+    );
+    const resumed = runtime.syncSession(reviewer.claims, {
+      autoClaim: true,
+      includeAcknowledged: false,
+    });
+    expect(resumed.work).toMatchObject({
+      task: { id: task.id, attempt: 1 },
+      lease: { fencingToken: 2 },
+      checkpoint: {
+        summary: "Implementation complete.",
+        nextAction: "Review the implementation.",
+      },
+    });
+    expect(
+      resumed.inbox.some(
+        (message) =>
+          message.intent === "handoff" &&
+          message.subject === "Ready for review",
+      ),
+    ).toBe(true);
+  });
+
+  it("recovers a ticket-bound checkpoint after a full runtime restart", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "relaymesh-restart-"));
+    let current = Date.parse("2026-07-26T12:00:00.000Z");
+    const createRuntime = () =>
+      new RelayRuntime({
+        databasePath: join(directory, "relaymesh.sqlite"),
+        dataDirectory: directory,
+        adminToken: "test-admin-token-that-is-long-enough",
+        heartbeatTimeoutMs: 1_000,
+        leaseDurationMs: 2_000,
+        sessionTtlMs: 60_000,
+        now: () => new Date(current),
+      });
+    let runtime = createRuntime();
+    try {
+      const mission = runtime.createMission({
+        title: "Process restart",
+        objective: "Resume without provider-local connection memory.",
+      });
+      const task = runtime.createTask(mission.id, {
+        title: "Durable restart work",
+        description: "Survive a RelayMesh process crash.",
+        parentTaskId: null,
+        priority: 10,
+        requiredCapabilities: ["general"],
+        dependencies: [],
+        assignedRole: "worker",
+        maxAttempts: 3,
+      });
+      const registration = runtime.createAgent({
+        name: "ChatGPT worker",
+        provider: "OpenAI",
+        defaultModel: "chatgpt",
+        description: "Restart test",
+      });
+      const issued = runtime.createConnectionTicket(mission.id, {
+        agentId: registration.agent.id,
+        model: "chatgpt",
+        role: "worker",
+        capabilities: ["general"],
+        expiresInHours: 1,
+      });
+      const firstConnection = await runtime.ensureConnectionSession(
+        issued.ticket,
+      );
+      const first = runtime.syncSession(firstConnection.claims, {
+        autoClaim: true,
+        includeAcknowledged: false,
+      });
+      runtime.checkpointTask(firstConnection.claims, task.id, {
+        leaseId: first.work!.lease.id,
+        fencingToken: first.work!.lease.fencingToken,
+        summary: "Provider-independent state is durable.",
+        nextAction: "Resume after the server restart.",
+        decisions: [],
+        artifactIds: [],
+        opaqueState: { model: "chatgpt" },
+      });
+      const firstSessionId = firstConnection.session.id;
+
+      runtime.close();
+      current += 3_000;
+      runtime = createRuntime();
+
+      const recoveredConnection = await runtime.ensureConnectionSession(
+        issued.ticket,
+      );
+      const recovered = runtime.syncSession(recoveredConnection.claims, {
+        autoClaim: true,
+        includeAcknowledged: false,
+      });
+      expect(recoveredConnection.session.id).not.toBe(firstSessionId);
+      expect(runtime.getSession(firstSessionId).status).toBe("lost");
+      expect(recovered.work).toMatchObject({
+        task: { id: task.id },
+        lease: { fencingToken: 2 },
+        checkpoint: {
+          summary: "Provider-independent state is durable.",
+          nextAction: "Resume after the server restart.",
+        },
+      });
+      expect(
+        runtime
+          .listConnectionTickets()
+          .find((connection) => connection.id === issued.connection.id)
+          ?.lastSessionId,
+      ).toBe(recoveredConnection.session.id);
+    } finally {
+      runtime.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("matches queued work by capabilities, role, and dependencies", async () => {
     const { runtime } = createContext();
     const mission = runtime.createMission({

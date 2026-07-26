@@ -167,7 +167,9 @@ describe("RelayMesh HTTP API", () => {
         url: "/.well-known/relaymesh.json",
       })
     ).json<{ protocol: string; primitives: string[] }>();
-    expect(discovery.protocol).toBe("relaymesh/1");
+    expect(discovery.protocol).toBe("relaymesh/2");
+    expect(discovery.primitives).toContain("sync-envelopes");
+    expect(discovery.primitives).toContain("atomic-handoff");
     expect(discovery.primitives).toContain("checkpoints");
     expect(discovery.primitives).toContain("recovery");
     const tools = (
@@ -176,7 +178,7 @@ describe("RelayMesh HTTP API", () => {
         url: "/.well-known/relaymesh-tools.json",
       })
     ).json<{ tools: Array<{ function: { strict: boolean } }> }>();
-    expect(tools.tools).toHaveLength(9);
+    expect(tools.tools).toHaveLength(11);
     expect(tools.tools.every((tool) => tool.function.strict)).toBe(true);
   });
 

@@ -1,29 +1,64 @@
-# RelayMesh coordination protocol v1
+# RelayMesh coordination protocol v2
 
-The HTTP API is the reference protocol. The TypeScript SDK, local stdio MCP,
-remote Streamable HTTP MCP, and OpenAI-compatible function tools are adapters
-over the same operations.
+RelayMesh separates durable coordination from model conversation. REST, local
+and remote MCP, A2A v1.0 HTTP+JSON, and OpenAI-compatible function tools all
+operate on the same missions, task leases, checkpoints, messages, artifacts,
+and signed events.
+
+## Canonical sync envelope
+
+Every model starts and reconnects through one operation:
+
+- REST: `POST /api/v1/sessions/:sessionId/sync`
+- MCP or function calling: `relay_sync`
+- A2A: `POST /a2a/v1/message:send`
+
+The result uses `protocol: "relaymesh/2"` and includes:
+
+- the mission and current session;
+- active peer sessions and their liveness;
+- renewed heartbeat deadline;
+- either the already-owned lease or one newly claimed compatible task;
+- the latest recovery checkpoint;
+- unacknowledged durable inbox messages;
+- mission artifacts and current event sequence;
+- canonical next-step instructions.
+
+Sync is idempotent. Repeating it does not claim a second task or increment the
+task attempt again.
+
+## Atomic handoff
+
+`POST /api/v1/tasks/:taskId/handoff`, `relay_handoff`, or the SDK handoff method
+commits one transaction that:
+
+1. writes a model-independent checkpoint;
+2. releases the current lease;
+3. fences the old writer;
+4. requeues the task for the target role;
+5. sends a durable `handoff` message.
+
+A planned handoff does not consume the task's failure budget. The receiving
+model calls sync and gets the checkpoint, new lease, new fencing token, and
+handoff message together.
 
 ## Transport adapters
 
 - Local MCP: `relaymesh-mcp` over stdio.
-- Remote MCP:
-  `/mcp/:missionId/:agentId?model=...&role=...&capabilities=...` over
-  Streamable HTTP, with the agent key as a Bearer token.
-- Scoped remote MCP:
-  `/mcp/connect/:ticket` for clients that cannot send custom credentials. The
-  ticket is hashed at rest, restricted to one mission/agent/model/role/
-  capability set, expires within 30 days, and is independently revocable.
+- Remote MCP: `/mcp/:missionId/:agentId?...` over Streamable HTTP with the
+  agent key as a Bearer token.
+- Scoped remote MCP: `/mcp/connect/:ticket` for clients that cannot configure
+  a separate secret. The URL is itself a credential.
+- A2A v1.0: public discovery at `/.well-known/agent-card.json`; authenticated
+  HTTP+JSON interface at `/a2a/v1`.
 - OpenAI-compatible functions:
   `GET /.well-known/relaymesh-tools.json`.
 - Native REST: `/api/v1`.
 
-The remote MCP transport maintains its own MCP session ID while joining one
-durable RelayMesh agent session. Credentials are revalidated on every request.
-Closing an MCP transport stops its heartbeat; normal recovery then marks the
-RelayMesh session lost and requeues leased work with the latest checkpoint.
-Reconnecting through the same endpoint automatically identifies the prior
-RelayMesh session as the recovery source.
+Connection tickets are hashed at rest, bound to one mission, agent, model,
+role, and capability set, independently revocable, and limited to 30 days.
+The ticket's most recent durable RelayMesh session ID is persisted in SQLite.
+No adapter depends on process-local connection memory for recovery.
 
 ## Authentication
 
@@ -33,88 +68,76 @@ Administrators use:
 Authorization: Bearer <admin-token>
 ```
 
-Agent sessions use:
+REST sessions use an Ed25519-signed, mission-scoped session JWT:
 
 ```http
 Authorization: Bearer <session-token>
 ```
 
-Session tokens are signed Ed25519 JWTs, scoped to one agent identity, session,
-mission, and role. Tokens expire and are revocable.
+Remote MCP validates an agent key or scoped ticket on every request. A2A
+validates a scoped ticket on every request and also requires:
+
+```http
+A2A-Version: 1.0
+Authorization: Bearer <scoped-ticket>
+Content-Type: application/a2a+json
+```
 
 ## Idempotency
 
-Mutating agent requests accept:
+Mutating REST requests accept:
 
 ```http
 Idempotency-Key: <client-generated-unique-key>
 ```
 
-Repeated keys return the original response. A key cannot be reused for a
+Repeated keys return the original result. A key cannot be reused for a
 different operation.
 
-## Join
+## Leasing and crash recovery
 
-`POST /api/v1/missions/:missionId/sessions`
+Claims return a lease ID and a monotonically increasing fencing token. Every
+checkpoint, handoff, completion, and failure is checked against the active
+lease. A late response from a crashed or handed-off session is rejected.
 
-An agent identity joins a mission with a model descriptor, role, capabilities,
-and optional recovery target. The response includes the session token and
-current mission snapshot.
+When a heartbeat expires, recovery:
 
-## Heartbeat
+1. marks the old session lost;
+2. expires its active leases;
+3. requeues recoverable tasks;
+4. retains the latest checkpoint;
+5. increments the fence on the next claim.
 
-`POST /api/v1/sessions/:sessionId/heartbeat`
+This provides at-least-once work delivery. External side effects still require
+connector-specific idempotency.
 
-Refreshes session liveness and active leases. The server returns pending inbox
-count and the next heartbeat deadline.
+## Durable messages and artifacts
 
-## Claim
+Messages use the intents `inform`, `request`, `response`, `challenge`,
+`decision`, `handoff`, and `blocker`. They can target a session, role, or
+mission broadcast. Unacknowledged messages remain replayable.
 
-`POST /api/v1/missions/:missionId/tasks/claim`
+Artifacts are immutable, content-addressed blobs. Checkpoints and messages
+reference artifact IDs instead of mutable provider attachments.
 
-Claims the highest-priority queued task whose requirements are satisfied by the
-session. The result includes a lease ID, fencing token, expiration, dependencies,
-and latest checkpoint.
+## RelayMesh A2A extension v1
 
-## Checkpoint
+RelayMesh implements A2A v1.0 HTTP+JSON discovery, message send, task get/list,
+and task cancellation. Native A2A task IDs and context IDs map directly to
+RelayMesh task IDs and mission IDs.
 
-`POST /api/v1/tasks/:taskId/checkpoints`
+The optional extension URI advertised in the Agent Card adds a
+`relaymesh-sync-envelope.json` artifact to an A2A task returned from
+`message:send`. Its data is the canonical `relaymesh/2` envelope described
+above. Clients that ignore the extension still receive standard A2A task
+status, messages, artifacts, and metadata.
 
-Stores a compact recovery capsule:
+RelayMesh does not advertise streaming or push notifications. Unsupported A2A
+versions and other errors use the A2A v1.0 `google.rpc.Status` error shape.
 
-- summary of completed work;
-- decisions and rejected alternatives;
-- next action;
-- artifact references;
-- model-independent state;
-- optional opaque model state.
+## Signed events
 
-## Messaging
-
-`POST /api/v1/missions/:missionId/messages`
-
-Messages include intent, recipient selector, correlation ID, reply-to ID,
-priority, content, and artifact references. Recipients acknowledge messages
-individually. Unacknowledged messages remain replayable.
-
-## Completion
-
-`POST /api/v1/tasks/:taskId/complete`
-
-Requires the active lease ID and fencing token. RelayMesh rejects stale
-completions after recovery has re-leased the task.
-
-## Events
-
-Every accepted mutation emits an immutable event with:
-
-- sequence number;
-- mission ID;
-- actor;
-- event type;
-- canonical payload;
-- previous hash;
-- current hash;
-- Ed25519 signature.
-
-This makes coordination history independently verifiable.
+Every accepted state mutation appends a per-mission event containing its
+sequence, actor, type, canonical payload, previous hash, current hash, Ed25519
+signature, and timestamp. `relaymesh verify --mission <id>` independently
+checks the chain.
