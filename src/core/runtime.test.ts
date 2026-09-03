@@ -22,9 +22,9 @@ afterEach(() => {
   }
 });
 
-function createContext(): TestContext {
+function createContext(baseEpochMs?: number): TestContext {
   const directory = mkdtempSync(join(tmpdir(), "relaymesh-runtime-"));
-  let current = Date.parse("2026-07-26T12:00:00.000Z");
+  let current = baseEpochMs ?? Date.parse("2026-07-26T12:00:00.000Z");
   const runtime = new RelayRuntime({
     databasePath: join(directory, "relaymesh.sqlite"),
     dataDirectory: directory,
@@ -1428,4 +1428,83 @@ describe("RelayRuntime", () => {
       /not addressed/i,
     );
   });
+
+  // Regression guard for the time-bomb fixed on 2026-09-03: RelayRuntime minted
+  // session JWTs from its INJECTED clock while SigningAuthority verified them
+  // against the REAL wall clock, so every test token was expired the moment the
+  // calendar moved past the hard-coded 2026-07-26 base date. The offsets below
+  // are derived from Date.now() AT RUN TIME on purpose - a fixed date here would
+  // simply become the next time bomb.
+  const YEAR_MS = 365 * 24 * 60 * 60 * 1_000;
+  for (const [label, offsetMs] of [
+    ["one year in the future", YEAR_MS],
+    ["one year in the past", -YEAR_MS],
+  ] as const) {
+    it(`mints and verifies sessions against an injected clock ${label}`, async () => {
+      const base = Date.now() + offsetMs;
+      const { runtime, advance } = createContext(base);
+      const mission = runtime.createMission({
+        title: `Clock independence ${label}`,
+        objective: "Session auth must follow the injected clock, not wall time.",
+      });
+
+      const worker = await registerAndJoin(
+        runtime,
+        mission.id,
+        "Clock Worker",
+        ["general"],
+      );
+
+      // registerAndJoin already round-tripped mint -> authenticateSession.
+      expect(worker.claims.missionId).toBe(mission.id);
+      expect(worker.claims.sessionId).toBe(worker.sessionId);
+      // iat/exp are stamped from the injected clock, not the wall clock.
+      expect(worker.claims.issuedAt).toBe(Math.floor(base / 1_000));
+      expect(worker.claims.expiresAt).toBe(
+        Math.floor((base + 60_000) / 1_000),
+      );
+      expect(
+        Math.abs(worker.claims.issuedAt * 1_000 - Date.now()),
+      ).toBeGreaterThan(YEAR_MS / 2);
+
+      // A second mint on the same skewed clock still verifies.
+      const second = await registerAndJoin(
+        runtime,
+        mission.id,
+        "Clock Worker Two",
+        ["general"],
+        "reviewer",
+      );
+      expect(second.claims.role).toBe("reviewer");
+
+      // And the sessionTtlMs boundary is still enforced ON THAT clock: past the
+      // 60s TTL the runtime must reject, proving the clock is threaded rather
+      // than expiry simply being switched off.
+      const joined = await runtime.joinSession(
+        mission.id,
+        runtime.createAgent({
+          name: "Clock Worker Three",
+          provider: "OpenAI",
+          defaultModel: "frontier-model",
+          description: "test agent",
+        }).agent,
+        {
+          model: "frontier-model",
+          role: "worker",
+          capabilities: ["general"],
+          recoveryFromSessionId: null,
+        },
+        "join-clock-worker-three",
+      );
+      advance(60_001);
+      await expect(
+        runtime.authenticateSession(joined.sessionToken),
+      ).rejects.toMatchObject({ statusCode: 401, code: "INVALID_TOKEN" });
+      await expect(
+        runtime.authenticateSession(joined.sessionToken),
+      ).rejects.toMatchObject({
+        details: { reason: "ERR_JWT_EXPIRED" },
+      });
+    });
+  }
 });

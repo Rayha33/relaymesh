@@ -253,7 +253,10 @@ export class RelayRuntime {
       mode: 0o700,
     });
     this.database = new RelayDatabase(options.databasePath);
-    this.signing = new SigningAuthority(join(this.dataDirectory, "keys"));
+    this.signing = new SigningAuthority(
+      join(this.dataDirectory, "keys"),
+      () => this.now(),
+    );
     this.events = new EventStore(this.database, this.signing);
     this.publicKey = this.signing.publicKeyPem;
 
