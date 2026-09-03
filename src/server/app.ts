@@ -63,6 +63,12 @@ export async function buildApp(config: RelayConfig): Promise<RelayApp> {
     bodyLimit: 15 * 1024 * 1024,
     trustProxy: false,
     requestIdHeader: "x-request-id",
+    // RelayMesh's primary transport is a long-lived MCP Streamable HTTP (SSE)
+    // stream, which by definition never goes idle. With fastify's default
+    // ("idle") close() waits for those sockets to end on their own, so a
+    // SIGTERM shutdown never completes while any agent is attached and the
+    // process has to be SIGKILLed. Destroy remaining sockets instead.
+    forceCloseConnections: true,
   });
   const runtime = new RelayRuntime({
     databasePath: config.databasePath,

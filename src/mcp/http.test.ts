@@ -233,6 +233,54 @@ describe("RelayMesh Streamable HTTP MCP", () => {
         ),
     ).toThrow("invalid, expired, or revoked");
   });
+
+  // REGRESSION GATE for the fastify 5.12.1 graceful-shutdown hang (2026-09-03).
+  // Once an MCP client has completed one successful request the SDK holds a
+  // standalone GET SSE stream open. That stream never goes idle, so fastify's
+  // default close() strategy waits on it indefinitely. src/server/index.ts
+  // awaits app.close() inside its SIGTERM handler with no timeout, which means
+  // a production RelayMesh with any agent attached can only be SIGKILLed.
+  // The client is deliberately NOT closed here: closing it masks the defect.
+  // Verified RED (resolves "timeout", ~5s) with forceCloseConnections removed
+  // from src/server/app.ts; GREEN (~ms) with it present.
+  it("closes the server while a streaming client is still attached", async () => {
+    const fixture = await setup();
+    const { runtime } = fixture.relay;
+    const registration = runtime.createAgent({
+      name: "Attached agent",
+      provider: "test",
+      defaultModel: "test",
+      description: "",
+    });
+    const mission = runtime.createMission({
+      title: "Shutdown while attached",
+      objective: "Close the server without waiting on a live stream.",
+    });
+    const connected = await connect(
+      fixture.baseUrl,
+      mission.id,
+      registration.agent.id,
+      registration.agentKey,
+      "attached-model",
+    );
+    // A successful request is what makes the SDK open its GET SSE stream.
+    expect((await connected.client.listTools()).tools.length).toBeGreaterThan(0);
+
+    // Take ownership of the fixture so the shared afterEach does not also try
+    // to close it, and so a regression fails HERE with a clear assertion rather
+    // than as an opaque afterEach hook timeout.
+    fixtures.splice(fixtures.indexOf(fixture), 1);
+    const closed = await Promise.race([
+      fixture.relay.app.close().then(() => "closed" as const),
+      new Promise<"timeout">((resolve) => {
+        setTimeout(() => resolve("timeout"), 5_000);
+      }),
+    ]);
+    fixture.relay.runtime.close();
+    rmSync(fixture.directory, { recursive: true, force: true });
+    expect(closed).toBe("closed");
+  }, 20_000);
+
 });
 
 async function setup(): Promise<Fixture> {
