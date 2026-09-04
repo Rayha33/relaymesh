@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -235,14 +236,20 @@ describe("RelayMesh Streamable HTTP MCP", () => {
   });
 
   // REGRESSION GATE for the fastify 5.12.1 graceful-shutdown hang (2026-09-03).
-  // Once an MCP client has completed one successful request the SDK holds a
-  // standalone GET SSE stream open. That stream never goes idle, so fastify's
-  // default close() strategy waits on it indefinitely. src/server/index.ts
-  // awaits app.close() inside its SIGTERM handler with no timeout, which means
-  // a production RelayMesh with any agent attached can only be SIGKILLed.
+  // Once the MCP SDK client has a standalone GET SSE stream attached, that
+  // stream never goes idle, so fastify's default ("idle") close() strategy
+  // waits on its socket forever. src/server/index.ts awaits app.close() inside
+  // its SIGTERM handler with no timeout, which means a production RelayMesh
+  // with any agent attached can only be SIGKILLed.
+  //
   // The client is deliberately NOT closed here: closing it masks the defect.
-  // Verified RED (resolves "timeout", ~5s) with forceCloseConnections removed
-  // from src/server/app.ts; GREEN (~ms) with it present.
+  //
+  // The gate is only meaningful if the GET SSE stream is REALLY attached when
+  // close() is raced. The SDK fires _startOrAuthSse() without awaiting it once
+  // the initialized notification is accepted, so neither connect() nor a
+  // successful listTools() POST establishes that -- an earlier version of this
+  // gate assumed it did and passed the broken build 2 runs out of 5. It now
+  // waits on server-side evidence that the stream is open before racing.
   it("closes the server while a streaming client is still attached", async () => {
     const fixture = await setup();
     const { runtime } = fixture.relay;
@@ -256,6 +263,9 @@ describe("RelayMesh Streamable HTTP MCP", () => {
       title: "Shutdown while attached",
       objective: "Close the server without waiting on a live stream.",
     });
+    // Watch before connecting: the standalone GET is an un-awaited side effect
+    // of the initialized notification and can land at any moment after it.
+    const attaching = attachedSseStream(fixture.relay.app.server);
     const connected = await connect(
       fixture.baseUrl,
       mission.id,
@@ -263,23 +273,34 @@ describe("RelayMesh Streamable HTTP MCP", () => {
       registration.agentKey,
       "attached-model",
     );
-    // A successful request is what makes the SDK open its GET SSE stream.
     expect((await connected.client.listTools()).tools.length).toBeGreaterThan(0);
+
+    // POSITIVE EVIDENCE that the object under test exists: RelayMesh is holding
+    // an open, un-ended SSE response for the SDK's standalone GET stream RIGHT
+    // NOW. Without this await, close() can win a race against a stream that
+    // never attached and the gate goes green on a broken server.
+    const stream = await attaching;
+    const attachedBeforeClose = stream.headersSent && !stream.writableEnded;
 
     // Take ownership of the fixture so the shared afterEach does not also try
     // to close it, and so a regression fails HERE with a clear assertion rather
     // than as an opaque afterEach hook timeout.
     fixtures.splice(fixtures.indexOf(fixture), 1);
+    let timer: NodeJS.Timeout | undefined;
     const closed = await Promise.race([
       fixture.relay.app.close().then(() => "closed" as const),
       new Promise<"timeout">((resolve) => {
-        setTimeout(() => resolve("timeout"), 5_000);
+        timer = setTimeout(() => resolve("timeout"), 5_000);
       }),
     ]);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
     fixture.relay.runtime.close();
     rmSync(fixture.directory, { recursive: true, force: true });
+    expect(attachedBeforeClose).toBe(true);
     expect(closed).toBe("closed");
-  }, 20_000);
+  }, 30_000);
 
 });
 
@@ -385,4 +406,55 @@ function activeSessionId(
     throw new Error("No active RelayMesh session found");
   }
   return session.id;
+}
+
+/**
+ * Resolves only when RelayMesh is actually holding the MCP SDK's standalone GET
+ * SSE stream open: the GET has reached the HTTP server, the server has written
+ * its response head, and the response has not ended. That is exactly the socket
+ * state fastify's default ("idle") close() strategy waits on indefinitely, and
+ * it is the precondition the shutdown gate needs before it races app.close().
+ *
+ * It is NOT implied by a successful request: the SDK calls _startOrAuthSse()
+ * without awaiting it (node_modules/@modelcontextprotocol/sdk client
+ * streamableHttp.js, in the 202-Accepted branch for the initialized
+ * notification), so the GET races whatever the caller does next.
+ */
+async function attachedSseStream(
+  server: Server,
+  timeoutMs = 15_000,
+): Promise<ServerResponse> {
+  const seen: ServerResponse[] = [];
+  const onRequest = (
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): void => {
+    if (
+      request.method === "GET" &&
+      request.url?.startsWith("/mcp/") === true &&
+      (request.headers.accept ?? "").includes("text/event-stream")
+    ) {
+      seen.push(response);
+    }
+  };
+  server.on("request", onRequest);
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const open = seen.find(
+        (response) => response.headersSent && !response.writableEnded,
+      );
+      if (open !== undefined) {
+        return open;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  } finally {
+    server.off("request", onRequest);
+  }
+  throw new Error(
+    `No MCP standalone GET SSE stream attached within ${timeoutMs}ms ` +
+      `(${seen.length} matching GET request(s) reached the server). The ` +
+      "shutdown gate proves nothing without one.",
+  );
 }
